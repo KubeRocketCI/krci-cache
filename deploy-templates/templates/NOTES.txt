@@ -1,0 +1,1 @@
+1. Application krci-cache has been successfully deployed!!
