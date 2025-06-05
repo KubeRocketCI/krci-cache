@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+FROM alpine:3.22.0
 
 # Set metadata labels
 LABEL org.opencontainers.image.title="krci-cache" \
@@ -6,11 +6,11 @@ LABEL org.opencontainers.image.title="krci-cache" \
       org.opencontainers.image.vendor="KubeRocketCI" \
       org.opencontainers.image.source="https://github.com/KubeRocketCI/krci-cache"
 
-# Install required packages
-RUN microdnf -y update && \
-    microdnf -y --nodocs install tar rsync shadow-utils && \
-    microdnf clean all && \
-    rm -rf /var/cache/yum
+# Install required packages with version pinning
+RUN apk add --no-cache \
+    tar=1.35-r3 \
+    rsync=3.4.1-r0 \
+    && rm -rf /var/cache/apk/*
 
 # Copy the pre-built binary from dist folder
 ARG TARGETARCH=amd64
@@ -20,7 +20,8 @@ COPY dist/krci-cache-${TARGETARCH} /usr/local/bin/krci-cache
 RUN chmod +x /usr/local/bin/krci-cache
 
 # Create non-root user
-RUN groupadd -r appuser && useradd -r -g appuser -u 1001 appuser
+RUN addgroup -g 1001 -S appuser && \
+    adduser -u 1001 -S appuser -G appuser
 
 # Run as non-root user
 USER 1001
