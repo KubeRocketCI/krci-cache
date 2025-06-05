@@ -1,8 +1,6 @@
 module github.com/KubeRocketCI/krci-cache
 
-go 1.23.8
-
-toolchain go1.24.2
+go 1.24.3
 
 require (
 	github.com/labstack/echo/v4 v4.13.4
