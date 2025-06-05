@@ -1,5 +1,85 @@
+version: "1"
+
+run:
+  timeout: 5m
+  allow-parallel-runners: true
+  issues-exit-code: 1
+  tests: true
+  skip-dirs:
+    - bin
+    - dist
+    - vendor
+
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-use-default: false
+  exclude-rules:
+    - path: ".*_test\\.go$"
+      linters:
+        - errcheck
+        - gosec
+        - dupl
+    - path: "uploader/.*"
+      linters:
+        - lll
+    - path: "main\\.go$"
+      linters:
+        - gochecknoinits
+
 linters:
-  disable:
+  disable-all: true
+  enable:
+    - copyloopvar
+    - errcheck
+    - gci
+    - goconst
+    - gocyclo
+    - gofmt
+    - goimports
     - gosimple
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - revive
     - staticcheck
+    - typecheck
+    - unconvert
+    - unparam
     - unused
+    - wsl
+
+linters-settings:
+  revive:
+    rules:
+      - name: comment-spacings
+      - name: package-comments
+      - name: exported
+        arguments: ["sayRepetitiveInsteadOfStutters"]
+      
+  gci:
+    sections:
+      - standard
+      - blank
+      - dot
+      - default
+      - prefix(github.com/KubeRocketCI)
+      - prefix(github.com/KubeRocketCI/krci-cache)
+    skip-generated: true
+    custom-order: true
+    
+  gocyclo:
+    min-complexity: 15
+    
+  goconst:
+    min-len: 2
+    min-occurrences: 3
+    
+  misspell:
+    locale: US

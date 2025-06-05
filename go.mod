@@ -1,11 +1,11 @@
-module github.com/chmouel/go-simple-uploader
+module github.com/KubeRocketCI/krci-cache
 
 go 1.23.8
 
 toolchain go1.24.2
 
 require (
-	github.com/labstack/echo/v4 v4.13.3
+	github.com/labstack/echo/v4 v4.13.4
 	github.com/stretchr/testify v1.10.0
 )
 

@@ -1,4 +1,8 @@
 pub/
-build
+dist/
 cover.out
+coverage.out
+coverage.html
 coverage.txt
+vendor/
+bin/

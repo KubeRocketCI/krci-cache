@@ -1,9 +1,10 @@
+// Package main provides the entry point for the krci-cache application.
 package main
 
 import (
 	"log"
 
-	"github.com/chmouel/go-simple-uploader/uploader"
+	"github.com/KubeRocketCI/krci-cache/uploader"
 )
 
 func main() {

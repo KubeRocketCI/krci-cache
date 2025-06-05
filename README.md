@@ -1,5 +1,5 @@
-[![GolangCI](https://golangci.com/badges/github.com/chmouel/go-simple-uploader.svg)](https://golangci.com/r/github.com/chmouel/go-simple-uploader)
-[![License](https://img.shields.io/github/license/chmouel/go-simple-uploader)](/LICENSE)
+[![GolangCI](https://golangci.com/badges/github.com/KubeRocketCI/krci-cache.svg)](https://golangci.com/r/github.com/KubeRocketCI/krci-cache)
+[![License](https://img.shields.io/github/license/KubeRocketCI/krci-cache)](/LICENSE)
 
 # GO Simple Uploader
 
@@ -13,7 +13,7 @@ deployment section of this document.
 ## Install
 
 ```shell
-go install github.com/chmouel/go-simple-uploader
+go install github.com/KubeRocketCI/krci-cache
 ```
 
 ### Configuration
@@ -57,7 +57,7 @@ stuff.
 
 You can run the service directly with the kubernetes [template](kubernetes/deployment.yaml). 
 
-By default the uplod password and username is username:password, to protect the `/upload` and `/delete` (as you should) properly you will need to change the secret from https://github.com/chmouel/go-simple-uploader/blob/master/kubernetes/deployment.yaml#L5
+By default the uplod password and username is username:password, to protect the `/upload` and `/delete` (as you should) properly you will need to change the secret from https://github.com/KubeRocketCI/krci-cache/blob/master/kubernetes/deployment.yaml#L5
 
 ## Run behind nginx
 

@@ -3,12 +3,15 @@ package uploader
 import (
 	"archive/tar"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 )
 
-// Untar takes a destination path and a reader; a tar reader loops over the tarfile
+// Package uploader provides HTTP upload server functionality with support for file uploads and tar.gz extraction.
+
+// UntarGz takes a destination path and a reader; a tar reader loops over the tarfile
 // creating the file structure at 'dst' along the way, and writing any files
 // credits to: https://medium.com/@skdomino/taring-untaring-files-in-go-6b07cf56bc07
 func UntarGz(dst string, r io.Reader) error {
@@ -16,7 +19,12 @@ func UntarGz(dst string, r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	defer gzr.Close()
+
+	defer func() {
+		if closeErr := gzr.Close(); closeErr != nil {
+			fmt.Println(closeErr.Error())
+		}
+	}()
 
 	tr := tar.NewReader(gzr)
 
@@ -24,7 +32,6 @@ func UntarGz(dst string, r io.Reader) error {
 		header, err := tr.Next()
 
 		switch {
-
 		// if no more files are found return
 		case err == io.EOF:
 			return nil
@@ -47,7 +54,6 @@ func UntarGz(dst string, r io.Reader) error {
 
 		// check the file type
 		switch header.Typeflag {
-
 		// if its a dir and it doesn't exist create it
 		case tar.TypeDir:
 			if _, err := os.Stat(target); err != nil {
@@ -65,12 +71,18 @@ func UntarGz(dst string, r io.Reader) error {
 
 			// copy over contents
 			if _, err := io.Copy(f, tr); err != nil {
+				if closeErr := f.Close(); closeErr != nil {
+					fmt.Println(closeErr.Error())
+				}
+
 				return err
 			}
 
 			// manually close here after each file operation; defering would cause each file close
 			// to wait until all operations have completed.
-			f.Close()
+			if err := f.Close(); err != nil {
+				return err
+			}
 		}
 	}
 }
