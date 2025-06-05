@@ -1,13 +1,9 @@
 [![License](https://img.shields.io/github/license/KubeRocketCI/krci-cache)](/LICENSE)
 
-# GO Simple Uploader
+# KubeRocketCI Cache (krci-cache)
 
-A simple uploader in GO, meant to be deployed in a container behind a
-nginx protected environment, but you can deploy it as you wish.
-
-I mainly deploy it to OpenShift which handles for me the building of the source
-the deployment with a nginx server and observability etc See the OpenShift
-deployment section of this document.
+A caching component for KubeRocketCI pipeline artifacts, built in Go with Echo framework.
+Designed to be deployed in containers with proper authentication and access controls.
 
 ## Install
 
@@ -17,123 +13,109 @@ go install github.com/KubeRocketCI/krci-cache
 
 ### Configuration
 
-done by environment variable with :
+Configuration is done via environment variables:
 
-- **UPLOADER_HOST** -- hostname to bind to
-- **UPLOADER_PORT** -- port to bind to
-- **UPLOADER_DIRECTORY** -- Directory where to upload
-- **UPLOADER_UPLOAD_CREDENTIALS** -- If you like to protect your upload directory by a username password then specify them separated by colon, i.e: `username:password`
+- **UPLOADER_HOST** -- hostname to bind to (default: localhost)
+- **UPLOADER_PORT** -- port to bind to (default: 8080)
+- **UPLOADER_DIRECTORY** -- Directory where to upload (default: ./pub)
+- **UPLOADER_UPLOAD_CREDENTIALS** -- Protect upload/delete endpoints with username:password (e.g: `username:password`)
 
-Usually you will run this behind an HTTP server which will handle the upload
-protection, acl or others. You really don't want to expose this to the internet
-unprotected.
+The service should be deployed behind proper authentication and access controls.
+Do not expose this directly to the internet without protection.
 
 ## Usage
 
-It accepts form http fields:
+The service accepts HTTP form fields:
 
 - **file**: The file stream of the upload
-- **path**: The path
-- **targz**: Assume the file uploaded is a tarball which we want to uncompress on filesystem
+- **path**: The target path for the file
+- **targz**: Set to extract tar.gz archives automatically on the filesystem
 
-## OpenShift Deployment
+## Container Deployment
 
-This uses S2I to generate an image against the repo and output it to an
-OpenShift ImageStream and then use a Kubernetes `Deployment` to deploy it, with
-a few sed for dynamic variables.
+The application is containerized using a multi-architecture approach with pre-built binaries.
+The container runs as a non-root user for security.
 
-The deployment has two containers, the main one is nginx getting all requests and
-passing the uploads to the uwsgi process in the other container and serves the
-static file directly.
+### Build
 
-Under nginx configuration the `/private` directory is protected with the same
-username password as configured in the htpasswd, which you can use to 'protect
-stuff.
+Use the provided Dockerfile which supports both amd64 and arm64 architectures:
+
+```shell
+docker build --build-arg TARGETARCH=amd64 -t krci-cache .
+```
 
 ## Setup
 
-## Run directly
+### Run directly
 
-You can run the service directly with the kubernetes [template](kubernetes/deployment.yaml). 
+You can run the service directly or use containerization. The default upload credentials are `username:password` for the `/upload` and `/delete` endpoints.
 
-By default the uplod password and username is username:password, to protect the `/upload` and `/delete` (as you should) properly you will need to change the secret from https://github.com/KubeRocketCI/krci-cache/blob/master/kubernetes/deployment.yaml#L5
+For production deployment, set proper credentials via the `UPLOADER_UPLOAD_CREDENTIALS` environment variable.
 
-## Run behind nginx
+### Run with authentication
 
-You need first to create a username password with :
+Set up authentication credentials:
 
 ```shell
-htpasswd -b -c openshift/config/osinstall.htpasswd username password
+export UPLOADER_UPLOAD_CREDENTIALS="username:password"
+./krci-cache
 ```
 
-Then you just use the makefile target to build and deploy :
+Test the deployment:
 
 ```shell
-oc new-project uploader && make deploy
-```
-
-Get the route of your deployment with :
-
-```shell
-oc get route uploader -o jsonpath='{.spec.host}'`
-```
-
-Test as working with :
-
-```shell
-route=http://$(oc get route uploader -o jsonpath='{.spec.host}')
 echo "HELLO WORLD" > /tmp/hello.txt
-curl -u username:password -F path=hello-upload.txt -X POST -F file=@/tmp/hello.txt ${route}/upload
-curl ${route}/hello-upload.txt
+curl -u username:password -F path=hello-upload.txt -X POST -F file=@/tmp/hello.txt http://localhost:8080/upload
+curl http://localhost:8080/hello-upload.txt
 ```
 
 ### API
 
-#### Upload**
+#### Upload
 
 - **method**: POST
 - **path**: */upload*
 - **arguments**:
-- **path**: Path where to upload the files, which is relative to the upload directory, directory traversal is checked and disallowed.
-- **file**: File post data
-- **targz**: Booleean if we want to uncompress the file on fs
+  - **path**: Target path for the file (relative to upload directory, directory traversal prevented)
+  - **file**: File post data
+  - **targz**: Boolean flag to extract tar.gz files on filesystem
 
 - **examples**:
 
 ```shell
-curl -u username:password -F path=hello-upload.txt -X POST -F file=@/tmp/hello.txt ${route}/upload
+curl -u username:password -F path=hello-upload.txt -X POST -F file=@/tmp/hello.txt http://localhost:8080/upload
 ```
 
 ```shell
-tar czf - /path/to/directory|curl -u username:password -F path=hello-upload.txt -F targz=true -X POST -F file=@- ${route}/upload
+tar czf - /path/to/directory|curl -u username:password -F path=hello-upload.txt -F targz=true -X POST -F file=@- http://localhost:8080/upload
 ```
 
-### Delete
+### Delete File
 
 - **method**: DELETE
-
 - **path**: */upload*
 - **arguments**:
-- **path**: Path to delete
+  - **path**: Path to delete
 
 - **example**:
 
 ```shell
-curl -u username:password -F path=hello-upload.txt -X DELETE ${route}/upload
+curl -u username:password -F path=hello-upload.txt -X DELETE http://localhost:8080/upload
 ```
----
-- **method**: DELETE
 
+### Delete Old Files
+
+- **method**: DELETE
 - **path**: */delete*
 - **arguments**:
-- **path**: path to directory to delete files in it
-- **days**: delete files in above directory older than X `days` 
-- **recursive**: flag to recursively delete files child directorires of `path` (defaults to `false`).  
+  - **path**: Directory path to clean up
+  - **days**: Delete files older than X days
+  - **recursive**: Recursively delete in subdirectories (defaults to `false`)
 
 - **example**:
 
 ```shell
-curl -k -s -u username:password -F path=/path/to/directory  -F days=1 -F recursive=true  -X DELETE ${route}/delete
+curl -u username:password -F path=/path/to/directory -F days=1 -F recursive=true -X DELETE http://localhost:8080/delete
 ```
 
 ## [LICENSE](LICENSE)
