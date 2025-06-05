@@ -79,7 +79,7 @@ dev: ## Run development server with live reload
 
 .PHONY: test
 test: fmt vet ## Run tests
-	go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+	go test -race -coverprofile=coverage.out -covermode=atomic ./...
 	@echo "Coverage report generated: coverage.out"
 
 .PHONY: test-coverage
