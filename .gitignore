@@ -6,3 +6,5 @@ coverage.html
 coverage.txt
 vendor/
 bin/
+
+.DS_Store
