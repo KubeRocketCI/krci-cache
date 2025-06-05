@@ -100,6 +100,11 @@ build: $(DIST_DIR) ## Build the binary file following EDP pattern
 		-o ${DIST_DIR}/${BIN_NAME}-${HOST_ARCH} \
 		$(PKG)
 
+.PHONY: build-all
+build-all: $(DIST_DIR) ## Build binaries for all supported architectures
+	$(MAKE) build HOST_ARCH=amd64
+	$(MAKE) build HOST_ARCH=arm64
+
 docker-build: build ## Build Docker image
 	docker build --build-arg TARGETARCH=${HOST_ARCH} -t ${IMG} .
 
