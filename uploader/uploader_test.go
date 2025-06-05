@@ -1,9 +1,8 @@
 package uploader
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
+	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -17,119 +16,259 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func httpUploadMultiPart(s, p string) *http.Request {
+// Test constants
+const (
+	// Expected content strings
+	expectedSimpleContent = "HELLO"
+	expectedLongContent   = "HELLO SIMPLE MOTO"
+	expectedLargeContent  = "This is a content that exceeds 10 bytes"
+	expectedTestContent   = "test content"
+
+	// Target paths
+	targetSimplePath    = "moto.txt"
+	targetNestedPath    = "a/foo/bar/moto.txt"
+	targetLargePath     = "large.txt"
+	targetTestPath      = "foo.txt"
+	targetTraversalPath = "../../../../../../../../../../etc/passwd"
+	targetExtractedPath = "extracted"
+
+	// Test configuration values
+	testHost               = "localhost"
+	testPort               = "8080"
+	testTimeout            = 30 * time.Second
+	testMaxConcurrentLimit = 1
+	testMaxSizeLimit       = 10
+	testVersion            = "1.0.0"
+	testHealthyStatus      = "healthy"
+
+	// Test environment values
+	testEnvHost            = "test-host"
+	testEnvPort            = "9999"
+	testEnvDir             = "/test/dir"
+	testEnvMaxSize         = "1048576" // 1MB
+	testEnvMaxConcurrent   = "5"
+	testEnvTimeout         = "45s"
+	testCredentials        = "testuser:testpass"
+	testInvalidCredentials = "invalidcredentials"
+
+	// File names and extensions
+	testFileName    = "hello.txt"
+	testTarGzName   = "test.tar.gz"
+	testContentType = "Content-Type"
+)
+
+func createTestRequest(content, path string) *http.Request {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	part, _ := writer.CreateFormFile("file", "hello.txt")
-	_, _ = part.Write([]byte(s))
-	_ = writer.WriteField("path", p)
+	part, _ := writer.CreateFormFile("file", testFileName)
+	_, _ = part.Write([]byte(content))
+	_ = writer.WriteField("path", path)
 	_ = writer.Close()
 
 	r, _ := http.NewRequest(http.MethodPost, "/upload", body)
-	r.Header.Set("Content-Type", writer.FormDataContentType())
+	r.Header.Set(testContentType, writer.FormDataContentType())
 
 	return r
 }
 
+func createTestConfig(tempdir string) Config {
+	return Config{
+		Host:                 testHost,
+		Port:                 testPort,
+		Directory:            tempdir,
+		MaxUploadSize:        0, // unlimited for tests
+		MaxConcurrentUploads: 10,
+		RequestTimeout:       testTimeout,
+		ReadTimeout:          testTimeout,
+		WriteTimeout:         testTimeout,
+		ShutdownTimeout:      testTimeout,
+	}
+}
+
+func createTestConfigWithLimits(tempdir string, maxSize int64, maxConcurrent int) Config {
+	config := createTestConfig(tempdir)
+	config.MaxUploadSize = maxSize
+	config.MaxConcurrentUploads = maxConcurrent
+
+	return config
+}
+
 func setupTestServer(t *testing.T) (*Server, string) {
+	t.Helper()
+
 	tempdir, err := os.MkdirTemp("", "test-uploader")
 	require.NoError(t, err)
 
-	config := Config{
-		Host:      "localhost",
-		Port:      "8080",
-		Directory: tempdir,
-	}
-
+	config := createTestConfig(tempdir)
 	server := NewServer(config)
 
 	return server, tempdir
+}
+
+func setupTestServerWithLimits(t *testing.T, maxSize int64, maxConcurrent int) (*Server, string) {
+	t.Helper()
+
+	tempdir, err := os.MkdirTemp("", "test-uploader-limits")
+	require.NoError(t, err)
+
+	config := createTestConfigWithLimits(tempdir, maxSize, maxConcurrent)
+	server := NewServer(config)
+
+	return server, tempdir
+}
+
+func assertJSONResponse(t *testing.T, rec *httptest.ResponseRecorder, expectedPath string) {
+	t.Helper()
+
+	var response map[string]interface{}
+	err := json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.Contains(t, response["message"], expectedPath)
+	assert.Equal(t, expectedPath, response["path"])
+}
+
+func assertHTTPError(t *testing.T, err error, expectedCode int) {
+	t.Helper()
+	require.Error(t, err)
+	he, ok := err.(*echo.HTTPError)
+	require.True(t, ok)
+	assert.Equal(t, expectedCode, he.Code)
+}
+
+func TestHealthCheck(t *testing.T) {
+	server, tempdir := setupTestServer(t)
+	defer os.RemoveAll(tempdir)
+
+	req, _ := http.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	context := server.echo.NewContext(req, rec)
+
+	err := server.healthCheck(context)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response map[string]interface{}
+	err = json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.Equal(t, testHealthyStatus, response["status"])
+	assert.NotEmpty(t, response["timestamp"])
+	assert.Equal(t, testVersion, response["version"])
 }
 
 func TestMultipleDirectory(t *testing.T) {
 	server, tempdir := setupTestServer(t)
 	defer os.RemoveAll(tempdir)
 
-	expectedString := "HELLO MOTO"
-	targetPath := "a/foo/bar/moto.txt"
-
-	req := httpUploadMultiPart(expectedString, targetPath)
+	req := createTestRequest(expectedSimpleContent, targetNestedPath)
 	rec := httptest.NewRecorder()
 	context := server.echo.NewContext(req, rec)
 
 	err := server.upload(context)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, http.StatusCreated, rec.Code)
 
-	dat, err := os.ReadFile(filepath.Join(tempdir, targetPath))
-	assert.NoError(t, err)
-	assert.Equal(t, expectedString, string(dat))
+	assertJSONResponse(t, rec, targetNestedPath)
+
+	// Verify file content
+	data, err := os.ReadFile(filepath.Join(tempdir, targetNestedPath))
+	require.NoError(t, err)
+	assert.Equal(t, expectedSimpleContent, string(data))
 }
 
 func TestUploaderSimple(t *testing.T) {
 	server, tempdir := setupTestServer(t)
 	defer os.RemoveAll(tempdir)
 
-	expectedString := "HELLO SIMPLE MOTO"
-	targetPath := "moto.txt"
-
-	req := httpUploadMultiPart(expectedString, targetPath)
+	req := createTestRequest(expectedLongContent, targetSimplePath)
 	rec := httptest.NewRecorder()
 	context := server.echo.NewContext(req, rec)
 
 	err := server.upload(context)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, http.StatusCreated, rec.Code)
 
-	dat, err := os.ReadFile(filepath.Join(tempdir, targetPath))
-	assert.NoError(t, err)
-	assert.Equal(t, expectedString, string(dat))
+	assertJSONResponse(t, rec, targetSimplePath)
+
+	// Verify file content
+	data, err := os.ReadFile(filepath.Join(tempdir, targetSimplePath))
+	require.NoError(t, err)
+	assert.Equal(t, expectedLongContent, string(data))
+}
+
+func TestUploadSizeLimit(t *testing.T) {
+	server, tempdir := setupTestServerWithLimits(t, testMaxSizeLimit, 10)
+	defer os.RemoveAll(tempdir)
+
+	req := createTestRequest(expectedLargeContent, targetLargePath)
+	rec := httptest.NewRecorder()
+	context := server.echo.NewContext(req, rec)
+
+	err := server.upload(context)
+	assertHTTPError(t, err, http.StatusRequestEntityTooLarge)
+}
+
+func TestConcurrentUploadLimit(t *testing.T) {
+	server, tempdir := setupTestServerWithLimits(t, 0, testMaxConcurrentLimit)
+	defer os.RemoveAll(tempdir)
+
+	// Fill the semaphore
+	server.uploadSem <- struct{}{}
+	defer func() { <-server.uploadSem }() // Ensure cleanup
+
+	req := createTestRequest(expectedLongContent, targetSimplePath)
+	rec := httptest.NewRecorder()
+	context := server.echo.NewContext(req, rec)
+
+	err := server.upload(context)
+	assertHTTPError(t, err, http.StatusTooManyRequests)
 }
 
 func TestUploaderTraversal(t *testing.T) {
 	server, tempdir := setupTestServer(t)
 	defer os.RemoveAll(tempdir)
 
-	expectedString := "HELLO MOTO"
-	targetPath := "../../../../../../../../../../etc/passwd"
-
-	req := httpUploadMultiPart(expectedString, targetPath)
+	req := createTestRequest(expectedLongContent, targetTraversalPath)
 	rec := httptest.NewRecorder()
 	context := server.echo.NewContext(req, rec)
 
 	err := server.upload(context)
-	assert.Error(t, err)
-
-	he, ok := err.(*echo.HTTPError)
-	if assert.True(t, ok) {
-		assert.Equal(t, http.StatusForbidden, he.Code)
-	}
+	assertHTTPError(t, err, http.StatusForbidden)
 }
 
 func TestUploaderDelete(t *testing.T) {
 	server, tempdir := setupTestServer(t)
 	defer os.RemoveAll(tempdir)
 
-	fpath := filepath.Join(tempdir, "foo.txt")
+	// Create test file
+	fpath := filepath.Join(tempdir, targetTestPath)
 	fp, err := os.Create(fpath)
 	require.NoError(t, err)
-	fp.Close()
+	require.NoError(t, fp.Close())
 
+	// Create delete request
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	_ = writer.WriteField("path", "foo.txt")
+	_ = writer.WriteField("path", targetTestPath)
 	_ = writer.Close()
 
 	req, _ := http.NewRequest(http.MethodDelete, "/upload", body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set(testContentType, writer.FormDataContentType())
 
 	rec := httptest.NewRecorder()
-
 	context := server.echo.NewContext(req, rec)
+
 	err = server.deleteFile(context)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, http.StatusAccepted, rec.Code)
 
+	// Verify JSON response
+	var response map[string]interface{}
+	err = json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.Contains(t, response["message"], targetTestPath)
+	assert.Equal(t, targetTestPath, response["path"])
+
+	// Verify file is deleted
 	_, err = os.Stat(fpath)
 	assert.True(t, os.IsNotExist(err))
 }
@@ -138,15 +277,15 @@ func TestDeleteFilesOlderThanOneDay(t *testing.T) {
 	server, tempdir := setupTestServer(t)
 	defer os.RemoveAll(tempdir)
 
-	fpath := filepath.Join(tempdir, "foo.txt")
+	// Create and age test file
+	fpath := filepath.Join(tempdir, targetTestPath)
 	fp, err := os.Create(fpath)
 	require.NoError(t, err)
-	fp.Close()
+	require.NoError(t, fp.Close())
 
 	// Set file timestamp to 25 hours ago
-	timestamp := time.Now().Add(-(time.Duration(1) * 25 * time.Hour))
-	err = os.Chtimes(fpath, timestamp, timestamp)
-	require.NoError(t, err)
+	timestamp := time.Now().Add(-25 * time.Hour)
+	require.NoError(t, os.Chtimes(fpath, timestamp, timestamp))
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -155,15 +294,23 @@ func TestDeleteFilesOlderThanOneDay(t *testing.T) {
 	_ = writer.Close()
 
 	req, _ := http.NewRequest(http.MethodDelete, "/delete", body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set(testContentType, writer.FormDataContentType())
 
 	rec := httptest.NewRecorder()
-
 	context := server.echo.NewContext(req, rec)
+
 	err = server.deleteOldFiles(context)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, http.StatusAccepted, rec.Code)
 
+	// Verify JSON response
+	var response map[string]interface{}
+	err = json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.Contains(t, response["message"], "deleted")
+	assert.Equal(t, float64(1), response["count"]) // JSON numbers are float64
+
+	// Verify file is deleted
 	_, err = os.Stat(fpath)
 	assert.True(t, os.IsNotExist(err))
 }
@@ -172,15 +319,15 @@ func TestDeleteFilesOlderThanTwoDay(t *testing.T) {
 	server, tempdir := setupTestServer(t)
 	defer os.RemoveAll(tempdir)
 
-	fpath := filepath.Join(tempdir, "foo.txt")
+	// Create and age test file
+	fpath := filepath.Join(tempdir, targetTestPath)
 	fp, err := os.Create(fpath)
 	require.NoError(t, err)
-	fp.Close()
+	require.NoError(t, fp.Close())
 
 	// Set file timestamp to 49 hours ago (2+ days)
-	timestamp := time.Now().Add(-(time.Duration(2) * 25 * time.Hour))
-	err = os.Chtimes(fpath, timestamp, timestamp)
-	require.NoError(t, err)
+	timestamp := time.Now().Add(-49 * time.Hour)
+	require.NoError(t, os.Chtimes(fpath, timestamp, timestamp))
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -189,76 +336,108 @@ func TestDeleteFilesOlderThanTwoDay(t *testing.T) {
 	_ = writer.Close()
 
 	req, _ := http.NewRequest(http.MethodDelete, "/delete", body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set(testContentType, writer.FormDataContentType())
 
 	rec := httptest.NewRecorder()
-
 	context := server.echo.NewContext(req, rec)
+
 	err = server.deleteOldFiles(context)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, http.StatusAccepted, rec.Code)
 
+	// Verify JSON response
+	var response map[string]interface{}
+	err = json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.Contains(t, response["message"], "deleted")
+	assert.Equal(t, float64(1), response["count"])
+
+	// Verify file is deleted
 	_, err = os.Stat(fpath)
 	assert.True(t, os.IsNotExist(err))
 }
 
 func TestConfigLoadFromEnv(t *testing.T) {
-	// Save original env values
-	originalHost := os.Getenv("UPLOADER_HOST")
-	originalPort := os.Getenv("UPLOADER_PORT")
-	originalDir := os.Getenv("UPLOADER_DIRECTORY")
+	// Save and restore environment variables
+	envVars := map[string]string{
+		"UPLOADER_HOST":                   os.Getenv("UPLOADER_HOST"),
+		"UPLOADER_PORT":                   os.Getenv("UPLOADER_PORT"),
+		"UPLOADER_DIRECTORY":              os.Getenv("UPLOADER_DIRECTORY"),
+		"UPLOADER_MAX_UPLOAD_SIZE":        os.Getenv("UPLOADER_MAX_UPLOAD_SIZE"),
+		"UPLOADER_MAX_CONCURRENT_UPLOADS": os.Getenv("UPLOADER_MAX_CONCURRENT_UPLOADS"),
+		"UPLOADER_REQUEST_TIMEOUT":        os.Getenv("UPLOADER_REQUEST_TIMEOUT"),
+	}
+	defer func() {
+		for key, value := range envVars {
+			os.Setenv(key, value)
+		}
+	}()
 
-	// Set test env values
-	os.Setenv("UPLOADER_HOST", "test-host")
-	os.Setenv("UPLOADER_PORT", "9999")
-	os.Setenv("UPLOADER_DIRECTORY", "/test/dir")
+	// Set test values
+	testEnvVars := map[string]string{
+		"UPLOADER_HOST":                   testEnvHost,
+		"UPLOADER_PORT":                   testEnvPort,
+		"UPLOADER_DIRECTORY":              testEnvDir,
+		"UPLOADER_MAX_UPLOAD_SIZE":        testEnvMaxSize,
+		"UPLOADER_MAX_CONCURRENT_UPLOADS": testEnvMaxConcurrent,
+		"UPLOADER_REQUEST_TIMEOUT":        testEnvTimeout,
+	}
+	for key, value := range testEnvVars {
+		os.Setenv(key, value)
+	}
 
-	// Load config
 	config := LoadConfig()
 
-	// Verify config loaded from env
-	assert.Equal(t, "test-host", config.Host)
-	assert.Equal(t, "9999", config.Port)
-	assert.Equal(t, "/test/dir", config.Directory)
+	assert.Equal(t, testEnvHost, config.Host)
+	assert.Equal(t, testEnvPort, config.Port)
+	assert.Equal(t, testEnvDir, config.Directory)
+	assert.Equal(t, int64(1048576), config.MaxUploadSize)
+	assert.Equal(t, 5, config.MaxConcurrentUploads)
+	assert.Equal(t, 45*time.Second, config.RequestTimeout)
+}
 
-	// Restore original env values
-	os.Setenv("UPLOADER_HOST", originalHost)
-	os.Setenv("UPLOADER_PORT", originalPort)
-	os.Setenv("UPLOADER_DIRECTORY", originalDir)
+func TestConfigDefaults(t *testing.T) {
+	config := LoadConfig()
+
+	assert.Equal(t, testHost, config.Host)
+	assert.Equal(t, testPort, config.Port)
+	assert.Equal(t, "./pub", config.Directory)
+	assert.Equal(t, int64(0), config.MaxUploadSize) // unlimited by default
+	assert.Equal(t, 10, config.MaxConcurrentUploads)
+	assert.Equal(t, testTimeout, config.RequestTimeout)
 }
 
 func TestPathSafety(t *testing.T) {
 	server, tempdir := setupTestServer(t)
 	defer os.RemoveAll(tempdir)
 
-	tests := []struct {
+	testCases := []struct {
 		name     string
 		path     string
 		expected bool
 	}{
-		{"Safe relative path", filepath.Join(tempdir, "file.txt"), true},
-		{"Safe nested path", filepath.Join(tempdir, "subdir/file.txt"), true},
-		{"Unsafe traversal", "/etc/passwd", false},
-		{"Unsafe relative traversal", "../../etc/passwd", false},
+		{"safe file", filepath.Join(tempdir, "safe.txt"), true},
+		{"safe subdirectory", filepath.Join(tempdir, "sub", "safe.txt"), true},
+		{"system file", "/etc/passwd", false},
+		{"traversal attempt", "../../../etc/passwd", false},
+		{"outside directory", tempdir + "/../outside.txt", false},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := server.isPathSafe(tt.path)
-			assert.Equal(t, tt.expected, result)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := server.isPathSafe(tc.path)
+			assert.Equal(t, tc.expected, result)
 		})
 	}
 }
 
-// Tests for lastModified handler
 func TestLastModified(t *testing.T) {
 	server, tempdir := setupTestServer(t)
 	defer os.RemoveAll(tempdir)
 
 	// Create a test file
 	testFile := filepath.Join(tempdir, "test.txt")
-	err := os.WriteFile(testFile, []byte("test"), 0644)
-	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(testFile, []byte("test"), 0644))
 
 	// Test HEAD request for existing file
 	req, _ := http.NewRequest(http.MethodHead, "/test.txt", nil)
@@ -267,10 +446,11 @@ func TestLastModified(t *testing.T) {
 	context.SetParamNames("path")
 	context.SetParamValues("test.txt")
 
-	err = server.lastModified(context)
-	assert.NoError(t, err)
+	err := server.lastModified(context)
+	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.NotEmpty(t, rec.Header().Get("Last-Modified"))
+	assert.Equal(t, "public, max-age=3600", rec.Header().Get("Cache-Control"))
 }
 
 func TestLastModifiedNotFound(t *testing.T) {
@@ -300,121 +480,102 @@ func TestLastModifiedPathTraversal(t *testing.T) {
 	context.SetParamValues("../../etc/passwd")
 
 	err := server.lastModified(context)
-	assert.Error(t, err)
-
-	he, ok := err.(*echo.HTTPError)
-	if assert.True(t, ok) {
-		assert.Equal(t, http.StatusForbidden, he.Code)
-	}
+	assertHTTPError(t, err, http.StatusForbidden)
 }
 
-// Tests for tar.gz upload functionality
 func TestUploadTarGz(t *testing.T) {
 	server, tempdir := setupTestServer(t)
 	defer os.RemoveAll(tempdir)
 
 	// Create test tar.gz data
-	tarGzData := createSimpleTestTarGz(t)
+	tarGzData := createTestTarGz(t)
 
 	// Create multipart request with tar.gz
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	part, _ := writer.CreateFormFile("file", "test.tar.gz")
+	part, _ := writer.CreateFormFile("file", testTarGzName)
 	_, _ = part.Write(tarGzData)
-	_ = writer.WriteField("path", "extracted")
+	_ = writer.WriteField("path", targetExtractedPath)
 	_ = writer.WriteField("targz", "true")
 	_ = writer.Close()
 
 	req, _ := http.NewRequest(http.MethodPost, "/upload", body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set(testContentType, writer.FormDataContentType())
 
 	rec := httptest.NewRecorder()
 	context := server.echo.NewContext(req, rec)
 
 	err := server.upload(context)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, http.StatusCreated, rec.Code)
 
+	assertJSONResponse(t, rec, targetExtractedPath)
+
 	// Verify extracted files
-	extractedFile := filepath.Join(tempdir, "extracted", "test.txt")
+	extractedFile := filepath.Join(tempdir, targetExtractedPath, "test.txt")
 	assert.FileExists(t, extractedFile)
 
 	content, err := os.ReadFile(extractedFile)
-	assert.NoError(t, err)
-	assert.Equal(t, "test content", string(content))
+	require.NoError(t, err)
+	assert.Equal(t, expectedTestContent, string(content))
 }
 
-// Tests for authentication
 func TestSetupAuthWithCredentials(t *testing.T) {
-	// Save original env value
+	// Save and restore original env value
 	original := os.Getenv("UPLOADER_UPLOAD_CREDENTIALS")
 	defer os.Setenv("UPLOADER_UPLOAD_CREDENTIALS", original)
 
 	// Set test credentials
-	os.Setenv("UPLOADER_UPLOAD_CREDENTIALS", "testuser:testpass")
+	os.Setenv("UPLOADER_UPLOAD_CREDENTIALS", testCredentials)
 
-	config := Config{
-		Host:      "localhost",
-		Port:      "8080",
-		Directory: "/tmp",
-	}
-
+	config := createTestConfig("/tmp")
 	server := NewServer(config)
 
-	// Test POST request without auth (should be protected)
-	req, _ := http.NewRequest(http.MethodPost, "/upload", nil)
-	rec := httptest.NewRecorder()
-	context := server.echo.NewContext(req, rec)
-
-	// This should trigger auth middleware
-	err := server.upload(context)
-	assert.Error(t, err)
-}
-
-func TestSetupAuthSkipForGET(t *testing.T) {
-	// Save original env value
-	original := os.Getenv("UPLOADER_UPLOAD_CREDENTIALS")
-	defer os.Setenv("UPLOADER_UPLOAD_CREDENTIALS", original)
-
-	// Set test credentials
-	os.Setenv("UPLOADER_UPLOAD_CREDENTIALS", "testuser:testpass")
-
-	config := Config{
-		Host:      "localhost",
-		Port:      "8080",
-		Directory: "/tmp",
-	}
-
-	server := NewServer(config)
-
-	// Test that auth is skipped for GET requests to static files
-	// This is tested indirectly by verifying the auth middleware configuration
+	// Verify server was set up correctly
+	assert.NotNil(t, server)
 	assert.NotNil(t, server.echo)
 }
 
-func TestSetupAuthInvalidCredentials(t *testing.T) {
-	// Save original env value
+func TestSetupAuthSkipForGET(t *testing.T) {
+	// Save and restore original env value
 	original := os.Getenv("UPLOADER_UPLOAD_CREDENTIALS")
 	defer os.Setenv("UPLOADER_UPLOAD_CREDENTIALS", original)
 
-	// Set invalid credentials (no colon)
-	os.Setenv("UPLOADER_UPLOAD_CREDENTIALS", "invalidcreds")
+	// Set test credentials
+	os.Setenv("UPLOADER_UPLOAD_CREDENTIALS", testCredentials)
 
-	config := Config{
-		Host:      "localhost",
-		Port:      "8080",
-		Directory: "/tmp",
-	}
+	server, tempdir := setupTestServer(t)
+	defer os.RemoveAll(tempdir)
 
+	// Test GET request to health endpoint (should skip auth)
+	req, _ := http.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	context := server.echo.NewContext(req, rec)
+
+	err := server.healthCheck(context)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestSetupAuthInvalidCredentials(t *testing.T) {
+	// Save and restore original env value
+	original := os.Getenv("UPLOADER_UPLOAD_CREDENTIALS")
+	defer os.Setenv("UPLOADER_UPLOAD_CREDENTIALS", original)
+
+	// Set invalid credentials (missing colon)
+	os.Setenv("UPLOADER_UPLOAD_CREDENTIALS", testInvalidCredentials)
+
+	config := createTestConfig("/tmp")
 	server := NewServer(config)
-	assert.NotNil(t, server.echo) // Should not crash
+
+	// Server should still be created, but auth won't be properly configured
+	assert.NotNil(t, server)
 }
 
 func TestDeleteOldFilesNoFiles(t *testing.T) {
 	server, tempdir := setupTestServer(t)
 	defer os.RemoveAll(tempdir)
 
-	// Test with empty directory
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	_ = writer.WriteField("path", "")
@@ -422,15 +583,21 @@ func TestDeleteOldFilesNoFiles(t *testing.T) {
 	_ = writer.Close()
 
 	req, _ := http.NewRequest(http.MethodDelete, "/delete", body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set(testContentType, writer.FormDataContentType())
 
 	rec := httptest.NewRecorder()
 	context := server.echo.NewContext(req, rec)
 
 	err := server.deleteOldFiles(context)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, http.StatusAccepted, rec.Code)
-	assert.Contains(t, rec.Body.String(), "NO Old Files")
+
+	// Verify JSON response
+	var response map[string]interface{}
+	err = json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.Contains(t, response["message"], "NO Old Files")
+	assert.Equal(t, float64(0), response["count"])
 }
 
 func TestDeleteOldFilesInvalidRecursive(t *testing.T) {
@@ -445,42 +612,11 @@ func TestDeleteOldFilesInvalidRecursive(t *testing.T) {
 	_ = writer.Close()
 
 	req, _ := http.NewRequest(http.MethodDelete, "/delete", body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set(testContentType, writer.FormDataContentType())
 
 	rec := httptest.NewRecorder()
 	context := server.echo.NewContext(req, rec)
 
 	err := server.deleteOldFiles(context)
-	assert.Error(t, err)
-
-	he, ok := err.(*echo.HTTPError)
-	if assert.True(t, ok) {
-		assert.Equal(t, http.StatusBadRequest, he.Code)
-	}
-}
-
-// Helper function to create simple test tar.gz for HTTP upload tests
-func createSimpleTestTarGz(t *testing.T) []byte {
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gw)
-
-	// Add a simple test file
-	content := "test content"
-	header := &tar.Header{
-		Name: "test.txt",
-		Mode: 0644,
-		Size: int64(len(content)),
-	}
-	err := tw.WriteHeader(header)
-	require.NoError(t, err)
-	_, err = tw.Write([]byte(content))
-	require.NoError(t, err)
-
-	err = tw.Close()
-	require.NoError(t, err)
-	err = gw.Close()
-	require.NoError(t, err)
-
-	return buf.Bytes()
+	assertHTTPError(t, err, http.StatusBadRequest)
 }

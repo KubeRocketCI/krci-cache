@@ -7,4 +7,8 @@ coverage.txt
 vendor/
 bin/
 
+# ignore macos files
 .DS_Store
+
+# ignore pub directory
+pub/
