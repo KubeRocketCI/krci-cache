@@ -63,8 +63,6 @@ spec:
             configMapKeyRef:
               name: krci-cache-config
               key: UPLOADER_REQUEST_TIMEOUT
-        - name: UPLOADER_UPLOAD_CREDENTIALS
-          value: "$(BASIC_AUTH_USERNAME):$(BASIC_AUTH_PASSWORD)"
         - name: BASIC_AUTH_USERNAME
           valueFrom:
             secretKeyRef:
@@ -75,6 +73,8 @@ spec:
             secretKeyRef:
               name: krci-cache-auth
               key: password
+        - name: UPLOADER_UPLOAD_CREDENTIALS
+          value: "cache-user:test-password"
         volumeMounts:
         - name: cache-storage
           mountPath: /cache

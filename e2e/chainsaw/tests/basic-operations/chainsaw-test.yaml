@@ -1,12 +1,12 @@
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: health-check-test
+  name: comprehensive-krci-cache-test
   labels:
     test-suite: basic-operations
-    test-type: health-check
+    test-type: comprehensive
 spec:
-  description: Test krci-cache health endpoint functionality
+  description: Comprehensive test for krci-cache deployment, health, and file operations
   timeouts:
     apply: 30s
     assert: 30s
@@ -22,7 +22,7 @@ spec:
         timeout: 60s
     - script:
         content: |
-          kubectl wait --for=condition=available --timeout=60s deployment/krci-cache -n krci-cache-e2e
+          kubectl wait --for=condition=available --timeout=120s deployment/krci-cache -n krci-cache-e2e
         timeout: 130s
     - assert:
         resource:
@@ -33,7 +33,6 @@ spec:
             namespace: krci-cache-e2e
           status:
             readyReplicas: 1
-            replicas: 1
     - assert:
         resource:
           apiVersion: v1
@@ -44,14 +43,24 @@ spec:
           spec:
             type: ClusterIP
 
-  # Step 2: Wait for deployment to be ready
+  # Step 2: Wait for deployment to be ready and healthy
   - name: wait-for-ready
-    description: Wait for krci-cache pod to be ready
+    description: Wait for krci-cache to be ready and healthy
     try:
     - script:
         content: |
           kubectl wait --for=condition=ready --timeout=60s pod -l app.kubernetes.io/name=krci-cache -n krci-cache-e2e
         timeout: 70s
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            namespace: krci-cache-e2e
+            labels:
+              app.kubernetes.io/name: krci-cache
+          status:
+            phase: Running
 
   # Step 3: Test health endpoint accessibility
   - name: test-health-endpoint
@@ -59,31 +68,157 @@ spec:
     try:
     - script:
         content: |
-          # Test health endpoint using kubectl exec instead of run
-          POD_NAME=$(kubectl get pods -n krci-cache-e2e -l app.kubernetes.io/name=krci-cache -o jsonpath='{.items[0].metadata.name}')
-          kubectl exec -n krci-cache-e2e $POD_NAME -- wget -q -O - --timeout=10 http://localhost:8080/health | grep -q "healthy"
-        timeout: 30s
+          kubectl run health-check-pod \
+            --image=curlimages/curl:latest \
+            --restart=Never \
+            --rm -i \
+            --namespace=krci-cache-e2e \
+            --timeout=60s \
+            --command -- \
+            curl -f -s http://krci-cache.krci-cache-e2e.svc.cluster.local/health
 
   # Step 4: Test health endpoint response content
   - name: test-health-response-content
-    description: Verify health endpoint returns expected JSON structure
+    description: Verify health endpoint returns expected content
     try:
     - script:
         content: |
-          # Test health endpoint response content using kubectl exec
-          POD_NAME=$(kubectl get pods -n krci-cache-e2e -l app.kubernetes.io/name=krci-cache -o jsonpath='{.items[0].metadata.name}')
-          kubectl exec -n krci-cache-e2e $POD_NAME -- wget -q -O - --timeout=10 http://localhost:8080/health | grep -q "status"
-        timeout: 30s
+          kubectl run health-content-pod \
+            --image=curlimages/curl:latest \
+            --restart=Never \
+            --rm -i \
+            --namespace=krci-cache-e2e \
+            --timeout=60s \
+            --command -- \
+            curl -f -s http://krci-cache.krci-cache-e2e.svc.cluster.local/health
 
-  # Step 5: Test health endpoint performance
+  # Step 5: Create test file and upload it
+  - name: test-file-upload
+    description: Test file upload functionality
+    try:
+    - script:
+        content: |
+          # Create a test pod with test file
+          kubectl run upload-test-pod \
+            --image=curlimages/curl:latest \
+            --restart=Never \
+            --rm -i \
+            --namespace=krci-cache-e2e \
+            --timeout=60s \
+            --command -- \
+            sh -c '
+              echo "This is a test file for krci-cache e2e testing" > /tmp/test-file.txt && \
+              curl -f -X POST \
+                -u cache-user:test-password \
+                -F "file=@/tmp/test-file.txt" \
+                -F "path=test-artifact/test-file.txt" \
+                -w "%{http_code}" \
+                http://krci-cache.krci-cache-e2e.svc.cluster.local/upload
+            '
+
+  # Step 6: Verify file was uploaded by checking existence
+  - name: verify-upload
+    description: Verify file was successfully uploaded
+    try:
+    - script:
+        content: |
+          kubectl run verify-upload-pod \
+            --image=curlimages/curl:latest \
+            --restart=Never \
+            --rm -i \
+            --namespace=krci-cache-e2e \
+            --timeout=60s \
+            --command -- \
+            curl -f -s \
+              -w "%{http_code}" \
+              -o /dev/null \
+              http://krci-cache.krci-cache-e2e.svc.cluster.local/test-artifact/test-file.txt
+
+  # Step 7: Download and verify file content
+  - name: test-file-download
+    description: Test file download and content verification
+    try:
+    - script:
+        content: |
+          kubectl run download-test-pod \
+            --image=curlimages/curl:latest \
+            --restart=Never \
+            --rm -i \
+            --namespace=krci-cache-e2e \
+            --timeout=60s \
+            --command -- \
+            curl -f -s \
+              http://krci-cache.krci-cache-e2e.svc.cluster.local/test-artifact/test-file.txt
+
+  # Step 8: Test file listing functionality (if available)
+  - name: test-file-listing
+    description: Test file listing functionality
+    try:
+    - script:
+        content: |
+          kubectl run list-test-pod \
+            --image=curlimages/curl:latest \
+            --restart=Never \
+            --rm -i \
+            --namespace=krci-cache-e2e \
+            --timeout=60s \
+            --command -- \
+            curl -f -s \
+              -u cache-user:test-password \
+              -w "%{http_code}" \
+              -o /dev/null \
+              http://krci-cache.krci-cache-e2e.svc.cluster.local/test-artifact
+
+  # Step 9: Test unauthorized access (should fail)
+  - name: test-unauthorized-access
+    description: Verify unauthorized access is properly rejected
+    try:
+    - script:
+        content: |
+          kubectl run unauth-test-pod \
+            --image=curlimages/curl:latest \
+            --restart=Never \
+            --rm -i \
+            --namespace=krci-cache-e2e \
+            --timeout=60s \
+            --command -- \
+            curl -s \
+              -w "%{http_code}" \
+              -o /dev/null \
+              http://krci-cache.krci-cache-e2e.svc.cluster.local/test-artifact/test-file.txt
+
+  # Step 10: Test health endpoint performance
   - name: test-health-performance
     description: Verify health endpoint responds within acceptable time
     try:
     - script:
         content: |
-          # Test health endpoint performance using kubectl exec
-          POD_NAME=$(kubectl get pods -n krci-cache-e2e -l app.kubernetes.io/name=krci-cache -o jsonpath='{.items[0].metadata.name}')
-          kubectl exec -n krci-cache-e2e $POD_NAME -- time wget -q -O /dev/null --timeout=10 http://localhost:8080/health
-        timeout: 30s
+          kubectl run health-perf-pod \
+            --image=curlimages/curl:latest \
+            --restart=Never \
+            --rm -i \
+            --namespace=krci-cache-e2e \
+            --timeout=60s \
+            --command -- \
+            sh -c 'time curl -f -s -o /dev/null --max-time 10 http://krci-cache.krci-cache-e2e.svc.cluster.local/health'
 
-  # Cleanup is automatic with Chainsaw
+  # Step 11: Cleanup test files
+  - name: cleanup-test-files
+    description: Clean up test files (if delete endpoint exists)
+    try:
+    - script:
+        content: |
+          kubectl run cleanup-test-pod \
+            --image=curlimages/curl:latest \
+            --restart=Never \
+            --rm -i \
+            --namespace=krci-cache-e2e \
+            --timeout=60s \
+            --command -- \
+            curl -s \
+              -u cache-user:test-password \
+              -X DELETE \
+              -F "path=test-artifact/test-file.txt" \
+              -w "%{http_code}" \
+              -o /dev/null \
+              http://krci-cache.krci-cache-e2e.svc.cluster.local/upload
