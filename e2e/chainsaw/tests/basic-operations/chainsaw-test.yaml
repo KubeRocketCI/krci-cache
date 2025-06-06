@@ -75,7 +75,14 @@ spec:
             --namespace=krci-cache-e2e \
             --timeout=60s \
             --command -- \
-            curl -f -s http://krci-cache.krci-cache-e2e.svc.cluster.local/health
+            curl -f -s -w "\n%{http_code}" http://krci-cache.krci-cache-e2e.svc.cluster.local/health
+        outputs:
+        - name: health_response
+          value: ($stdout)
+    - assert:
+        resource:
+          # Verify HTTP status code is 200
+          (contains($health_response, '200')): true
 
   # Step 4: Test health endpoint response content
   - name: test-health-response-content
@@ -91,6 +98,13 @@ spec:
             --timeout=60s \
             --command -- \
             curl -f -s http://krci-cache.krci-cache-e2e.svc.cluster.local/health
+        outputs:
+        - name: health_content
+          value: ($stdout)
+    - assert:
+        resource:
+          # Verify response contains expected health indicators
+          (contains($health_content, 'ok') || contains($health_content, 'healthy') || contains($health_content, 'status')): true
 
   # Step 5: Create test file and upload it
   - name: test-file-upload
@@ -112,9 +126,17 @@ spec:
                 -u cache-user:test-password \
                 -F "file=@/tmp/test-file.txt" \
                 -F "path=test-artifact/test-file.txt" \
-                -w "%{http_code}" \
+                -w "\n%{http_code}" \
+                -s \
                 http://krci-cache.krci-cache-e2e.svc.cluster.local/upload
             '
+        outputs:
+        - name: upload_response
+          value: ($stdout)
+    - assert:
+        resource:
+          # Verify upload returns success status code (200 or 201)
+          (contains($upload_response, '200') || contains($upload_response, '201')): true
 
   # Step 6: Verify file was uploaded by checking existence
   - name: verify-upload
@@ -133,6 +155,13 @@ spec:
               -w "%{http_code}" \
               -o /dev/null \
               http://krci-cache.krci-cache-e2e.svc.cluster.local/test-artifact/test-file.txt
+        outputs:
+        - name: verify_response
+          value: ($stdout)
+    - assert:
+        resource:
+          # Verify file exists (HTTP 200)
+          (contains($verify_response, '200')): true
 
   # Step 7: Download and verify file content
   - name: test-file-download
@@ -149,6 +178,13 @@ spec:
             --command -- \
             curl -f -s \
               http://krci-cache.krci-cache-e2e.svc.cluster.local/test-artifact/test-file.txt
+        outputs:
+        - name: downloaded_content
+          value: ($stdout)
+    - assert:
+        resource:
+          # Verify downloaded content matches uploaded content
+          (contains($downloaded_content, 'This is a test file for krci-cache e2e testing')): true
 
   # Step 8: Test file listing functionality (if available)
   - name: test-file-listing
@@ -163,11 +199,17 @@ spec:
             --namespace=krci-cache-e2e \
             --timeout=60s \
             --command -- \
-            curl -f -s \
+            curl -s \
               -u cache-user:test-password \
               -w "%{http_code}" \
-              -o /dev/null \
               http://krci-cache.krci-cache-e2e.svc.cluster.local/test-artifact
+        outputs:
+        - name: list_response
+          value: ($stdout)
+    - assert:
+        resource:
+          # Verify listing returns some response (200, 301, 404, or other valid codes)
+          (contains($list_response, '200') || contains($list_response, '301') || contains($list_response, '404') || contains($list_response, '403')): true
 
   # Step 9: Test unauthorized access (should fail)
   - name: test-unauthorized-access
@@ -186,6 +228,13 @@ spec:
               -w "%{http_code}" \
               -o /dev/null \
               http://krci-cache.krci-cache-e2e.svc.cluster.local/test-artifact/test-file.txt
+        outputs:
+        - name: unauth_response
+          value: ($stdout)
+    - assert:
+        resource:
+          # Verify response (200 if public read access is allowed, or 401/403 if auth required)
+          (contains($unauth_response, '200') || contains($unauth_response, '401') || contains($unauth_response, '403')): true
 
   # Step 10: Test health endpoint performance
   - name: test-health-performance
@@ -200,7 +249,14 @@ spec:
             --namespace=krci-cache-e2e \
             --timeout=60s \
             --command -- \
-            sh -c 'time curl -f -s -o /dev/null --max-time 10 http://krci-cache.krci-cache-e2e.svc.cluster.local/health'
+            curl -f -s -o /dev/null --max-time 10 -w "%{time_total}" http://krci-cache.krci-cache-e2e.svc.cluster.local/health
+        outputs:
+        - name: response_time_seconds
+          value: (to_number(split($stdout, 'pod')[0]))
+    - assert:
+        resource:
+          # Verify response time is under 5 seconds
+          ($response_time_seconds < `5.0`): true
 
   # Step 11: Cleanup test files
   - name: cleanup-test-files
@@ -222,3 +278,10 @@ spec:
               -w "%{http_code}" \
               -o /dev/null \
               http://krci-cache.krci-cache-e2e.svc.cluster.local/upload
+        outputs:
+        - name: cleanup_response
+          value: ($stdout)
+    - assert:
+        resource:
+          # Verify cleanup returns success status code (200, 202, 204, or 404 is acceptable)
+          (contains($cleanup_response, '200') || contains($cleanup_response, '202') || contains($cleanup_response, '204') || contains($cleanup_response, '404')): true

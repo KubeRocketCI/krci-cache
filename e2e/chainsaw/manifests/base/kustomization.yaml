@@ -5,10 +5,6 @@ metadata:
   name: krci-cache-base
 
 # Common labels applied to all resources
-commonLabels:
-  app.kubernetes.io/name: krci-cache
-  app.kubernetes.io/part-of: kuberocketci
-  app.kubernetes.io/component: cache-server
 
 # Common annotations
 commonAnnotations:
@@ -19,37 +15,43 @@ namespace: krci-cache-e2e
 
 # Resources to include in this kustomization
 resources:
-  - namespace.yaml
-  - deployment.yaml
-  - service.yaml
-  - configmap.yaml
-  - pvc.yaml
+- namespace.yaml
+- deployment.yaml
+- service.yaml
+- configmap.yaml
+- pvc.yaml
 
 # ConfigMap generator for environment variables
 configMapGenerator:
-  - name: krci-cache-config
-    literals:
-      - UPLOADER_HOST=0.0.0.0
-      - UPLOADER_PORT=8080
-      - UPLOADER_DIRECTORY=/cache/uploads
-      - UPLOADER_MAX_UPLOAD_SIZE=104857600
-      - UPLOADER_MAX_CONCURRENT_UPLOADS=10
-      - UPLOADER_REQUEST_TIMEOUT=30s
+- literals:
+  - UPLOADER_HOST=0.0.0.0
+  - UPLOADER_PORT=8080
+  - UPLOADER_DIRECTORY=/cache/uploads
+  - UPLOADER_MAX_UPLOAD_SIZE=104857600
+  - UPLOADER_MAX_CONCURRENT_UPLOADS=10
+  - UPLOADER_REQUEST_TIMEOUT=30s
+  name: krci-cache-config
 
 # Secret generator for basic auth (for testing)
 secretGenerator:
-  - name: krci-cache-auth
-    literals:
-      - username=cache-user
-      - password=test-password
+- literals:
+  - username=cache-user
+  - password=test-password
+  name: krci-cache-auth
 
 # Images to use - configured for local e2e testing with kind
 images:
-  - name: krci-cache
-    newName: krci-cache
-    newTag: latest
+- name: krci-cache
+  newName: krci-cache
+  newTag: latest
 
 # Resource transformations
 replicas:
-  - name: krci-cache
-    count: 1
+- count: 1
+  name: krci-cache
+labels:
+- includeSelectors: true
+  pairs:
+    app.kubernetes.io/component: cache-server
+    app.kubernetes.io/name: krci-cache
+    app.kubernetes.io/part-of: kuberocketci
