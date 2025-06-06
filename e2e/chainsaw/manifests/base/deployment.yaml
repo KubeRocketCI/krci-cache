@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: krci-cache
+  labels:
+    app.kubernetes.io/name: krci-cache
+    app.kubernetes.io/component: cache-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: krci-cache
+      app.kubernetes.io/component: cache-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: krci-cache
+        app.kubernetes.io/component: cache-server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: krci-cache
+        image: krci-cache:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        env:
+        - name: UPLOADER_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: krci-cache-config
+              key: UPLOADER_HOST
+        - name: UPLOADER_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: krci-cache-config
+              key: UPLOADER_PORT
+        - name: UPLOADER_DIRECTORY
+          valueFrom:
+            configMapKeyRef:
+              name: krci-cache-config
+              key: UPLOADER_DIRECTORY
+        - name: UPLOADER_MAX_UPLOAD_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: krci-cache-config
+              key: UPLOADER_MAX_UPLOAD_SIZE
+        - name: UPLOADER_MAX_CONCURRENT_UPLOADS
+          valueFrom:
+            configMapKeyRef:
+              name: krci-cache-config
+              key: UPLOADER_MAX_CONCURRENT_UPLOADS
+        - name: UPLOADER_REQUEST_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: krci-cache-config
+              key: UPLOADER_REQUEST_TIMEOUT
+        - name: UPLOADER_UPLOAD_CREDENTIALS
+          value: "$(BASIC_AUTH_USERNAME):$(BASIC_AUTH_PASSWORD)"
+        - name: BASIC_AUTH_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: krci-cache-auth
+              key: username
+        - name: BASIC_AUTH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: krci-cache-auth
+              key: password
+        volumeMounts:
+        - name: cache-storage
+          mountPath: /cache
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1001
+          runAsGroup: 1001
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+      volumes:
+      - name: cache-storage
+        persistentVolumeClaim:
+          claimName: krci-cache-pvc
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30

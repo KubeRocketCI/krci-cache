@@ -1,0 +1,55 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: krci-cache-base
+
+# Common labels applied to all resources
+commonLabels:
+  app.kubernetes.io/name: krci-cache
+  app.kubernetes.io/part-of: kuberocketci
+  app.kubernetes.io/component: cache-server
+
+# Common annotations
+commonAnnotations:
+  app.kubernetes.io/managed-by: chainsaw-e2e-tests
+
+# Namespace for all resources
+namespace: krci-cache-e2e
+
+# Resources to include in this kustomization
+resources:
+  - namespace.yaml
+  - deployment.yaml
+  - service.yaml
+  - configmap.yaml
+  - pvc.yaml
+
+# ConfigMap generator for environment variables
+configMapGenerator:
+  - name: krci-cache-config
+    literals:
+      - UPLOADER_HOST=0.0.0.0
+      - UPLOADER_PORT=8080
+      - UPLOADER_DIRECTORY=/cache/uploads
+      - UPLOADER_MAX_UPLOAD_SIZE=104857600
+      - UPLOADER_MAX_CONCURRENT_UPLOADS=10
+      - UPLOADER_REQUEST_TIMEOUT=30s
+
+# Secret generator for basic auth (for testing)
+secretGenerator:
+  - name: krci-cache-auth
+    literals:
+      - username=cache-user
+      - password=test-password
+
+# Images to use - configured for local e2e testing with kind
+images:
+  - name: krci-cache
+    newName: krci-cache
+    newTag: latest
+
+# Resource transformations
+replicas:
+  - name: krci-cache
+    count: 1

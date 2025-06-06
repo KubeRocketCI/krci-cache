@@ -1,0 +1,89 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: health-check-test
+  labels:
+    test-suite: basic-operations
+    test-type: health-check
+spec:
+  description: Test krci-cache health endpoint functionality
+  timeouts:
+    apply: 30s
+    assert: 30s
+    cleanup: 60s
+  steps:
+  # Step 1: Deploy krci-cache application
+  - name: deploy-krci-cache
+    description: Deploy krci-cache with base configuration
+    try:
+    - script:
+        content: |
+          kubectl apply -k ../../manifests/base
+        timeout: 60s
+    - script:
+        content: |
+          kubectl wait --for=condition=available --timeout=60s deployment/krci-cache -n krci-cache-e2e
+        timeout: 130s
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: krci-cache
+            namespace: krci-cache-e2e
+          status:
+            readyReplicas: 1
+            replicas: 1
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: krci-cache
+            namespace: krci-cache-e2e
+          spec:
+            type: ClusterIP
+
+  # Step 2: Wait for deployment to be ready
+  - name: wait-for-ready
+    description: Wait for krci-cache pod to be ready
+    try:
+    - script:
+        content: |
+          kubectl wait --for=condition=ready --timeout=60s pod -l app.kubernetes.io/name=krci-cache -n krci-cache-e2e
+        timeout: 70s
+
+  # Step 3: Test health endpoint accessibility
+  - name: test-health-endpoint
+    description: Test /health endpoint returns successful response
+    try:
+    - script:
+        content: |
+          # Test health endpoint using kubectl exec instead of run
+          POD_NAME=$(kubectl get pods -n krci-cache-e2e -l app.kubernetes.io/name=krci-cache -o jsonpath='{.items[0].metadata.name}')
+          kubectl exec -n krci-cache-e2e $POD_NAME -- wget -q -O - --timeout=10 http://localhost:8080/health | grep -q "healthy"
+        timeout: 30s
+
+  # Step 4: Test health endpoint response content
+  - name: test-health-response-content
+    description: Verify health endpoint returns expected JSON structure
+    try:
+    - script:
+        content: |
+          # Test health endpoint response content using kubectl exec
+          POD_NAME=$(kubectl get pods -n krci-cache-e2e -l app.kubernetes.io/name=krci-cache -o jsonpath='{.items[0].metadata.name}')
+          kubectl exec -n krci-cache-e2e $POD_NAME -- wget -q -O - --timeout=10 http://localhost:8080/health | grep -q "status"
+        timeout: 30s
+
+  # Step 5: Test health endpoint performance
+  - name: test-health-performance
+    description: Verify health endpoint responds within acceptable time
+    try:
+    - script:
+        content: |
+          # Test health endpoint performance using kubectl exec
+          POD_NAME=$(kubectl get pods -n krci-cache-e2e -l app.kubernetes.io/name=krci-cache -o jsonpath='{.items[0].metadata.name}')
+          kubectl exec -n krci-cache-e2e $POD_NAME -- time wget -q -O /dev/null --timeout=10 http://localhost:8080/health
+        timeout: 30s
+
+  # Cleanup is automatic with Chainsaw

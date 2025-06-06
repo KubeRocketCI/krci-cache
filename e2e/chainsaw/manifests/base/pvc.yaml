@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: krci-cache-pvc
+  labels:
+    app.kubernetes.io/name: krci-cache
+    app.kubernetes.io/component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # For kind clusters, use default storage class
+  # storageClassName: standard

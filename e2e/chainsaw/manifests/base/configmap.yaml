@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: krci-cache-test-config
+  labels:
+    app.kubernetes.io/name: krci-cache
+    app.kubernetes.io/component: test-config
+data:
+  # Test-specific configuration
+  test-timeout: "60s"
+  test-retry-count: "3"
+  test-parallel-uploads: "5"
+
+  # Test file configurations
+  small-file-size: "1KB"
+  medium-file-size: "10MB"
+  large-file-size: "100MB"
+
+  # Service endpoint for tests
+  service-url: "http://krci-cache.krci-cache-e2e.svc.cluster.local"
+  health-endpoint: "/health"
+  upload-endpoint: "/upload"
+  download-endpoint: "/download"

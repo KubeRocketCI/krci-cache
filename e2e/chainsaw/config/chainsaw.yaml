@@ -1,0 +1,20 @@
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Configuration
+metadata:
+  name: krci-cache-e2e-config
+spec:
+  timeouts:
+    apply: 30s
+    assert: 30s
+    cleanup: 60s
+    delete: 30s
+    error: 30s
+    exec: 60s
+  cleanup:
+    skipDelete: false
+    delayBeforeCleanup: 10s
+  execution:
+    failFast: false
+    parallel: 2
+    repeatCount: 1
+    forceTerminationGracePeriod: 30s

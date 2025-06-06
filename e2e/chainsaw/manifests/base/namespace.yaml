@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: krci-cache-e2e
+  labels:
+    app.kubernetes.io/name: krci-cache
+    app.kubernetes.io/part-of: kuberocketci
+    app.kubernetes.io/component: e2e-test
+    name: krci-cache-e2e
+  annotations:
+    app.kubernetes.io/managed-by: chainsaw-e2e-tests
