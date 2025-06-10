@@ -23,7 +23,7 @@ spec:
     - script:
         content: |
           kubectl wait --for=condition=available --timeout=120s deployment/krci-cache -n krci-cache-e2e
-        timeout: 130s
+        timeout: 60s
     - assert:
         resource:
           apiVersion: apps/v1
@@ -62,20 +62,31 @@ spec:
           status:
             phase: Running
 
+  # Step 2.5: Setup curl test pod for all HTTP operations
+  - name: setup-curl-pod
+    description: Create a persistent curl pod for all HTTP tests
+    try:
+    - script:
+        content: |
+          kubectl run curl-test-pod \
+            --image=curlimages/curl:latest \
+            --restart=Never \
+            --namespace=krci-cache-e2e \
+            --command -- \
+            sleep 3600
+    - script:
+        content: |
+          kubectl wait --for=condition=ready --timeout=60s pod/curl-test-pod -n krci-cache-e2e
+        timeout: 70s
+
   # Step 3: Test health endpoint accessibility
   - name: test-health-endpoint
     description: Test /health endpoint returns successful response
     try:
     - script:
         content: |
-          kubectl run health-check-pod \
-            --image=curlimages/curl:latest \
-            --restart=Never \
-            --rm -i \
-            --namespace=krci-cache-e2e \
-            --timeout=60s \
-            --command -- \
-            curl -f -s -w "\n%{http_code}" http://krci-cache.krci-cache-e2e.svc.cluster.local/health
+          kubectl exec curl-test-pod -n krci-cache-e2e -- \
+            curl -f -s -w "%{http_code}" http://krci-cache.krci-cache-e2e.svc.cluster.local/health
         outputs:
         - name: health_response
           value: ($stdout)
@@ -90,21 +101,15 @@ spec:
     try:
     - script:
         content: |
-          kubectl run health-content-pod \
-            --image=curlimages/curl:latest \
-            --restart=Never \
-            --rm -i \
-            --namespace=krci-cache-e2e \
-            --timeout=60s \
-            --command -- \
+          kubectl exec curl-test-pod -n krci-cache-e2e -- \
             curl -f -s http://krci-cache.krci-cache-e2e.svc.cluster.local/health
         outputs:
-        - name: health_content
-          value: ($stdout)
+        - name: health_response_json
+          value: (json_parse($stdout))
     - assert:
         resource:
-          # Verify response contains expected health indicators
-          (contains($health_content, 'ok') || contains($health_content, 'healthy') || contains($health_content, 'status')): true
+          # Verify status field equals "healthy"
+          ($health_response_json.status == 'healthy'): true
 
   # Step 5: Create test file and upload it
   - name: test-file-upload
@@ -112,21 +117,14 @@ spec:
     try:
     - script:
         content: |
-          # Create a test pod with test file
-          kubectl run upload-test-pod \
-            --image=curlimages/curl:latest \
-            --restart=Never \
-            --rm -i \
-            --namespace=krci-cache-e2e \
-            --timeout=60s \
-            --command -- \
+          kubectl exec curl-test-pod -n krci-cache-e2e -- \
             sh -c '
               echo "This is a test file for krci-cache e2e testing" > /tmp/test-file.txt && \
               curl -f -X POST \
                 -u cache-user:test-password \
                 -F "file=@/tmp/test-file.txt" \
                 -F "path=test-artifact/test-file.txt" \
-                -w "\n%{http_code}" \
+                -w "%{http_code}" \
                 -s \
                 http://krci-cache.krci-cache-e2e.svc.cluster.local/upload
             '
@@ -144,13 +142,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl run verify-upload-pod \
-            --image=curlimages/curl:latest \
-            --restart=Never \
-            --rm -i \
-            --namespace=krci-cache-e2e \
-            --timeout=60s \
-            --command -- \
+          kubectl exec curl-test-pod -n krci-cache-e2e -- \
             curl -f -s \
               -w "%{http_code}" \
               -o /dev/null \
@@ -169,13 +161,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl run download-test-pod \
-            --image=curlimages/curl:latest \
-            --restart=Never \
-            --rm -i \
-            --namespace=krci-cache-e2e \
-            --timeout=60s \
-            --command -- \
+          kubectl exec curl-test-pod -n krci-cache-e2e -- \
             curl -f -s \
               http://krci-cache.krci-cache-e2e.svc.cluster.local/test-artifact/test-file.txt
         outputs:
@@ -192,13 +178,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl run list-test-pod \
-            --image=curlimages/curl:latest \
-            --restart=Never \
-            --rm -i \
-            --namespace=krci-cache-e2e \
-            --timeout=60s \
-            --command -- \
+          kubectl exec curl-test-pod -n krci-cache-e2e -- \
             curl -s \
               -u cache-user:test-password \
               -w "%{http_code}" \
@@ -217,13 +197,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl run unauth-test-pod \
-            --image=curlimages/curl:latest \
-            --restart=Never \
-            --rm -i \
-            --namespace=krci-cache-e2e \
-            --timeout=60s \
-            --command -- \
+          kubectl exec curl-test-pod -n krci-cache-e2e -- \
             curl -s \
               -w "%{http_code}" \
               -o /dev/null \
@@ -242,17 +216,11 @@ spec:
     try:
     - script:
         content: |
-          kubectl run health-perf-pod \
-            --image=curlimages/curl:latest \
-            --restart=Never \
-            --rm -i \
-            --namespace=krci-cache-e2e \
-            --timeout=60s \
-            --command -- \
+          kubectl exec curl-test-pod -n krci-cache-e2e -- \
             curl -f -s -o /dev/null --max-time 10 -w "%{time_total}" http://krci-cache.krci-cache-e2e.svc.cluster.local/health
         outputs:
         - name: response_time_seconds
-          value: (to_number(split($stdout, 'pod')[0]))
+          value: (to_number($stdout))
     - assert:
         resource:
           # Verify response time is under 5 seconds
@@ -264,13 +232,7 @@ spec:
     try:
     - script:
         content: |
-          kubectl run cleanup-test-pod \
-            --image=curlimages/curl:latest \
-            --restart=Never \
-            --rm -i \
-            --namespace=krci-cache-e2e \
-            --timeout=60s \
-            --command -- \
+          kubectl exec curl-test-pod -n krci-cache-e2e -- \
             curl -s \
               -u cache-user:test-password \
               -X DELETE \
@@ -285,3 +247,11 @@ spec:
         resource:
           # Verify cleanup returns success status code (200, 202, 204, or 404 is acceptable)
           (contains($cleanup_response, '200') || contains($cleanup_response, '202') || contains($cleanup_response, '204') || contains($cleanup_response, '404')): true
+
+  # Step 12: Cleanup curl test pod
+  - name: cleanup-curl-pod
+    description: Clean up the curl test pod
+    try:
+    - script:
+        content: |
+          kubectl delete pod curl-test-pod -n krci-cache-e2e --ignore-not-found=true
