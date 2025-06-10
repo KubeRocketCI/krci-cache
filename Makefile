@@ -120,6 +120,15 @@ clean: ## Remove previous build artifacts
 	@rm -rf ${DIST_DIR}
 	@rm -f coverage.*
 
+.PHONY: clean-tools
+clean-tools: ## Remove downloaded tools
+	@rm -rf $(LOCALBIN)
+	@echo "Tools cache cleaned"
+
+.PHONY: clean-all
+clean-all: clean clean-tools ## Remove all build artifacts and tools
+	@echo "Complete cleanup finished"
+
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
 # $2 - package url which can be installed
