@@ -13,7 +13,7 @@ RUN apk add --no-cache \
     && rm -rf /var/cache/apk/*
 
 # Copy the pre-built binary from dist folder
-ARG TARGETARCH=amd64
+ARG TARGETARCH
 COPY dist/krci-cache-${TARGETARCH} /usr/local/bin/krci-cache
 
 # Ensure binary is executable
