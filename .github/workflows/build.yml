@@ -25,6 +25,10 @@ jobs:
         with:
           fetch-depth: 0  # Needed for git describe
 
+      - name: Get version
+        id: version
+        run: echo "VERSION=$(cat VERSION)" >> $GITHUB_OUTPUT
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -55,10 +59,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ steps.image_name.outputs.value }}
           tags: |
             type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha,prefix={{branch}}-
+            ${{ steps.version.outputs.VERSION }}
           labels: |
             org.opencontainers.image.title=krci-cache
             org.opencontainers.image.description=KubeRocketCI component to cache pipeline artifacts
@@ -81,7 +82,7 @@ jobs:
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ steps.image_name.outputs.value }}:${{ steps.meta.outputs.version }}
+          image-ref: ${{ env.REGISTRY }}/${{ steps.image_name.outputs.value }}:${{ steps.version.outputs.VERSION }}
           format: 'sarif'
           output: 'trivy-results.sarif'
 
