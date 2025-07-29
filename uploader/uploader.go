@@ -302,7 +302,18 @@ func (s *Server) upload(c echo.Context) error {
 	}
 	defer s.uploadSemaphore.Release()
 
-	// Get the uploaded file
+	// Set multipart form memory limit before parsing to prevent OOM
+	// This limits how much file data is kept in memory vs spilled to disk
+	req := c.Request()
+	if parseErr := req.ParseMultipartForm(32 << 20); parseErr != nil { // 32MB memory limit
+		s.logger.Error("failed to parse multipart form",
+			"error", parseErr,
+			"request_id", requestID)
+
+		return echo.NewHTTPError(http.StatusBadRequest, "Failed to parse multipart form")
+	}
+
+	// Get the uploaded file using Echo's method (now that we've pre-parsed with memory limit)
 	file, err := c.FormFile("file")
 	if err != nil {
 		s.logger.Error("failed to get form file",
