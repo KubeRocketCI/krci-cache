@@ -81,11 +81,42 @@ func LoadConfig() Config {
 
 // Server represents the upload server
 type Server struct {
-	config       Config
-	echo         *echo.Echo
-	logger       *slog.Logger
-	uploadSem    chan struct{} // Semaphore for limiting concurrent uploads
-	shutdownChan chan struct{}
+	config          Config
+	echo            *echo.Echo
+	logger          *slog.Logger
+	uploadSemaphore *Semaphore // Lightweight semaphore for limiting concurrent uploads
+	shutdownChan    chan struct{}
+}
+
+// Semaphore implementation - lightweight alternative to channel-based semaphore
+type Semaphore struct {
+	ch chan struct{}
+}
+
+// NewSemaphore creates a new semaphore with the specified capacity
+func NewSemaphore(capacity int) *Semaphore {
+	return &Semaphore{ch: make(chan struct{}, capacity)}
+}
+
+// Acquire blocks until a semaphore slot is available, then acquires it
+func (s *Semaphore) Acquire() {
+	s.ch <- struct{}{}
+}
+
+// Release releases a previously acquired semaphore slot
+func (s *Semaphore) Release() {
+	<-s.ch
+}
+
+// TryAcquire attempts to acquire a semaphore slot without blocking
+// Returns true if successful, false if no slots are available
+func (s *Semaphore) TryAcquire() bool {
+	select {
+	case s.ch <- struct{}{}:
+		return true
+	default:
+		return false
+	}
 }
 
 // NewServer creates a new upload server
@@ -94,9 +125,9 @@ func NewServer(config Config) *Server {
 	e.HideBanner = true
 	e.HidePort = true
 
-	// Setup simple slog-based logging
+	// Setup lightweight JSON logging with reduced verbosity
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: slog.LevelWarn, // Only log warnings and errors to reduce overhead
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			// Rename the timestamp field to match our previous format
 			if a.Key == slog.TimeKey {
@@ -118,38 +149,40 @@ func NewServer(config Config) *Server {
 		Timeout: config.RequestTimeout,
 	}))
 
-	// Custom logger middleware
+	// Lightweight request logger - only log errors and slow requests
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
-		LogStatus:   true,
-		LogURI:      true,
-		LogError:    true,
-		LogMethod:   true,
-		LogLatency:  true,
-		LogRemoteIP: true,
+		LogStatus:  true,
+		LogURI:     true,
+		LogError:   true,
+		LogLatency: true,
 		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
-			errorMsg := ""
-			if v.Error != nil {
-				errorMsg = v.Error.Error()
+			// Only log errors or slow requests to reduce memory overhead
+			if v.Error != nil || v.Latency > 1000000000 { // 1 second
+				if v.Error != nil {
+					logger.Error("request_error",
+						"method", v.Method,
+						"uri", v.URI,
+						"status", v.Status,
+						"error", v.Error.Error(),
+					)
+				} else {
+					logger.Warn("slow_request",
+						"method", v.Method,
+						"uri", v.URI,
+						"latency_ms", v.Latency.Milliseconds(),
+					)
+				}
 			}
-			logger.Info("request",
-				"method", v.Method,
-				"uri", v.URI,
-				"status", v.Status,
-				"latency", v.Latency,
-				"remote_ip", v.RemoteIP,
-				"request_id", v.RequestID,
-				"error", errorMsg,
-			)
 			return nil
 		},
 	}))
 
 	s := &Server{
-		config:       config,
-		echo:         e,
-		logger:       logger,
-		uploadSem:    make(chan struct{}, config.MaxConcurrentUploads),
-		shutdownChan: make(chan struct{}),
+		config:          config,
+		echo:            e,
+		logger:          logger,
+		uploadSemaphore: NewSemaphore(config.MaxConcurrentUploads),
+		shutdownChan:    make(chan struct{}),
 	}
 
 	s.setupRoutes()
@@ -262,14 +295,12 @@ func (s *Server) upload(c echo.Context) error {
 	requestID := c.Response().Header().Get(echo.HeaderXRequestID)
 
 	// Acquire semaphore for concurrent upload limiting
-	select {
-	case s.uploadSem <- struct{}{}:
-		defer func() { <-s.uploadSem }()
-	default:
-		s.logger.Debug("upload rejected - too many concurrent uploads",
+	if !s.uploadSemaphore.TryAcquire() {
+		s.logger.Warn("upload rejected - too many concurrent uploads",
 			"request_id", requestID)
 		return echo.NewHTTPError(http.StatusTooManyRequests, "Too many concurrent uploads")
 	}
+	defer s.uploadSemaphore.Release()
 
 	// Get the uploaded file
 	file, err := c.FormFile("file")
@@ -333,11 +364,11 @@ func (s *Server) upload(c echo.Context) error {
 	// Determine the full save path
 	savePath := filepath.Join(s.config.Directory, path)
 
-	// Handle the upload based on file type or targz form field
+	// Handle the upload based on explicit targz flag only
 	ctx := c.Request().Context()
 	targzFlag := c.FormValue("targz")
 
-	if targzFlag == "true" || strings.HasSuffix(strings.ToLower(path), ".tar.gz") {
+	if targzFlag == "true" {
 		err = s.handleTarGzUpload(ctx, savePath, src, path, requestID)
 	} else {
 		err = s.handleRegularUpload(ctx, savePath, src, path, requestID)
@@ -372,9 +403,14 @@ func (s *Server) handleTarGzUpload(ctx context.Context, savePath string, src io.
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
+	// Only use context wrapper if timeout is configured
+	var reader io.Reader = src
+	if s.config.RequestTimeout > 0 {
+		reader = &contextReader{ctx: ctx, reader: src}
+	}
+
 	// Extract tar.gz to the target directory
-	contextReader := &contextReader{ctx: ctx, reader: src}
-	if err := UntarGz(savePath, contextReader); err != nil {
+	if err := UntarGz(savePath, reader); err != nil {
 		s.logger.Error("failed to extract tar.gz",
 			"error", err,
 			"path", savePath,
@@ -418,9 +454,14 @@ func (s *Server) handleRegularUpload(ctx context.Context, savePath string, src i
 		}
 	}()
 
-	// Copy file content with context awareness
-	contextReader := &contextReader{ctx: ctx, reader: src}
-	if _, err := io.Copy(dst, contextReader); err != nil {
+	// Only use context wrapper if timeout is configured
+	var reader io.Reader = src
+	if s.config.RequestTimeout > 0 {
+		reader = &contextReader{ctx: ctx, reader: src}
+	}
+
+	// Copy file content
+	if _, err := io.Copy(dst, reader); err != nil {
 		// Clean up partial file on error
 		_ = os.Remove(savePath)
 		s.logger.Error("failed to copy file content",

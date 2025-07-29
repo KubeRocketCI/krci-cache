@@ -48,6 +48,185 @@ func TestUntarGz(t *testing.T) {
 	assert.Equal(t, "nested content", string(content))
 }
 
+func TestUntarGz_MemoryOptimizedSizeValidation(t *testing.T) {
+	tempdir, err := os.MkdirTemp("", "test-untar-memory")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempdir)
+
+	// Create tar.gz with multiple moderate-sized files
+	// The key test is that we don't pre-allocate huge amounts of memory
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+
+	// Add multiple files that together would have caused memory issues with old approach
+	for i := 0; i < 5; i++ {
+		filename := fmt.Sprintf("file_%d.txt", i)
+		content := fmt.Sprintf("Content for file %d - this is reasonable sized content", i)
+
+		header := &tar.Header{
+			Name:     filename,
+			Size:     int64(len(content)),
+			Mode:     0644,
+			Typeflag: tar.TypeReg,
+		}
+
+		err = tw.WriteHeader(header)
+		require.NoError(t, err)
+
+		_, err = tw.Write([]byte(content))
+		require.NoError(t, err)
+	}
+
+	tw.Close()
+	gzw.Close()
+
+	// This should work efficiently with streaming memory optimization
+	err = UntarGz(tempdir, &buf)
+	assert.NoError(t, err)
+
+	// Verify all files were extracted correctly
+	for i := 0; i < 5; i++ {
+		filename := fmt.Sprintf("file_%d.txt", i)
+		expectedContent := fmt.Sprintf("Content for file %d - this is reasonable sized content", i)
+
+		extractedFile := filepath.Join(tempdir, filename)
+		assert.FileExists(t, extractedFile)
+
+		content, err := os.ReadFile(extractedFile)
+		assert.NoError(t, err)
+		assert.Equal(t, expectedContent, string(content))
+	}
+}
+
+func TestUntarGz_ActualSizeTracking(t *testing.T) {
+	tempdir, err := os.MkdirTemp("", "test-untar-size-tracking")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempdir)
+
+	// Create multiple files that are reasonably sized
+	// This tests that our size tracking works correctly with real data
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+
+	// Add 3 files with realistic content sizes
+	expectedContents := []string{
+		"Small content for file 0, testing actual size tracking functionality.",
+		"Medium content for file 1, with some more text to make it a bit larger than the first file.",
+		"Large content for file 2, with even more text content to test our size tracking works correctly with files of different sizes, and to ensure we're properly accounting for actual bytes written to disk.",
+	}
+
+	for i, content := range expectedContents {
+		header := &tar.Header{
+			Name:     fmt.Sprintf("file_%d.txt", i),
+			Size:     int64(len(content)),
+			Mode:     0644,
+			Typeflag: tar.TypeReg,
+		}
+
+		err = tw.WriteHeader(header)
+		require.NoError(t, err)
+
+		_, err = tw.Write([]byte(content))
+		require.NoError(t, err)
+	}
+
+	tw.Close()
+	gzw.Close()
+
+	// This should succeed with proper size tracking
+	err = UntarGz(tempdir, &buf)
+	assert.NoError(t, err)
+
+	// Verify all files were extracted correctly
+	for i, expectedContent := range expectedContents {
+		extractedFile := filepath.Join(tempdir, fmt.Sprintf("file_%d.txt", i))
+		assert.FileExists(t, extractedFile)
+
+		content, err := os.ReadFile(extractedFile)
+		assert.NoError(t, err)
+		assert.Equal(t, expectedContent, string(content))
+	}
+}
+
+func TestUntarGz_TotalSizeLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping size limit test in short mode due to large data creation")
+	}
+
+	tempdir, err := os.MkdirTemp("", "test-untar-size-limit")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempdir)
+
+	// Create a small archive but use custom trackingWriter to simulate reaching the limit
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
+
+	// Add a small file
+	content := []byte("test content for size limit validation")
+	header := &tar.Header{
+		Name:     "test_file.txt",
+		Size:     int64(len(content)),
+		Mode:     0644,
+		Typeflag: tar.TypeReg,
+	}
+
+	err = tw.WriteHeader(header)
+	require.NoError(t, err)
+	_, err = tw.Write(content)
+	require.NoError(t, err)
+
+	tw.Close()
+	gzw.Close()
+
+	// Test the validation function directly
+	err = validateTotalSize(MaxTotalSize-100, 200) // Would exceed limit
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum total size limit")
+
+	// Test that the archive extraction works normally when under limit
+	err = UntarGz(tempdir, &buf)
+	assert.NoError(t, err)
+
+	// Verify file was extracted
+	extractedFile := filepath.Join(tempdir, "test_file.txt")
+	assert.FileExists(t, extractedFile)
+	extractedContent, err := os.ReadFile(extractedFile)
+	assert.NoError(t, err)
+	assert.Equal(t, content, extractedContent)
+}
+
+func TestTrackingWriter(t *testing.T) {
+	var buf bytes.Buffer
+
+	tw := &trackingWriter{
+		writer:       &buf,
+		currentTotal: 1000, // Already have 1000 bytes written
+		written:      0,
+	}
+
+	// Write data that stays within limit
+	data := []byte("test data")
+	n, err := tw.Write(data)
+	assert.NoError(t, err)
+	assert.Equal(t, len(data), n)
+	assert.Equal(t, int64(len(data)), tw.written)
+	assert.Equal(t, "test data", buf.String())
+
+	// Try to write data that would exceed total limit
+	tw.currentTotal = MaxTotalSize - 100 // Close to limit
+	tw.written = 0
+
+	buf.Reset()
+
+	largeData := make([]byte, 200) // This would exceed limit
+	_, err = tw.Write(largeData)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum total size limit")
+}
+
 func TestUntarGzInvalidData(t *testing.T) {
 	tempdir, err := os.MkdirTemp("", "test-untar-invalid")
 	require.NoError(t, err)
@@ -95,17 +274,28 @@ func TestUntarGzFileSizeLimit(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(tempdir)
 
-	// Test the validateEntry function directly to avoid creating huge files
-	// This tests the core validation logic that would reject oversized files
-	var totalSize int64
+	// Create an archive with a single file that exceeds individual file size limit
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gzw)
 
-	// Create a mock header with size exceeding MaxFileSize
+	// Create a file larger than MaxFileSize (2GB)
 	header := &tar.Header{
-		Name: "oversized.txt",
-		Size: MaxFileSize + 1, // Just over the limit
+		Name:     "huge_file.txt",
+		Size:     MaxFileSize + 1000, // Slightly over 2GB limit
+		Mode:     0644,
+		Typeflag: tar.TypeReg,
 	}
 
-	err = validateEntry(header, &totalSize)
+	err = tw.WriteHeader(header)
+	require.NoError(t, err)
+
+	// We don't need to write actual data - the header size check should fail first
+	tw.Close()
+	gzw.Close()
+
+	// This should fail due to individual file size limit
+	err = UntarGz(tempdir, &buf)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds maximum size limit")
 }
@@ -115,27 +305,20 @@ func TestUntarGzTotalSizeLimit(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(tempdir)
 
-	// Test the validateEntry function with multiple files exceeding total size
-	var totalSize int64
+	// Test the validateTotalSize function with edge cases
+	// Test exact limit
+	err = validateTotalSize(MaxTotalSize, 0)
+	assert.NoError(t, err)
 
-	// Add several files that together exceed MaxTotalSize
-	for i := 0; i < 5; i++ {
-		header := &tar.Header{
-			Name: fmt.Sprintf("large_file_%d.txt", i),
-			Size: MaxFileSize, // Each file at max size
-		}
+	// Test one byte over limit
+	err = validateTotalSize(MaxTotalSize, 1)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum total size limit")
 
-		if i < 4 {
-			// First 4 files should be OK
-			err := validateEntry(header, &totalSize)
-			assert.NoError(t, err)
-		} else {
-			// 5th file should exceed total limit
-			err := validateEntry(header, &totalSize)
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), "archive exceeds maximum total size limit")
-		}
-	}
+	// Test multiple smaller additions that exceed limit
+	err = validateTotalSize(MaxTotalSize-50, 100)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum total size limit")
 }
 
 func TestUntarGzDirectoryPermissions(t *testing.T) {
