@@ -1,4 +1,4 @@
-FROM alpine:3.22.0
+FROM alpine:3.22.1
 
 # Set metadata labels
 LABEL org.opencontainers.image.title="krci-cache" \

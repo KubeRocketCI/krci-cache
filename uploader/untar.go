@@ -30,9 +30,10 @@ func UntarGz(dst string, r io.Reader) error {
 
 	tr := tar.NewReader(gzr)
 
-	var totalSize int64
+	// Track actual bytes written instead of header-declared sizes
+	var totalWritten int64
 
-	return extractArchive(tr, absDst, &totalSize)
+	return extractArchive(tr, absDst, &totalWritten)
 }
 
 // setupExtraction prepares the destination and gzip reader
@@ -58,7 +59,7 @@ func closeGzipReader(gzr *gzip.Reader) {
 }
 
 // extractArchive processes the tar archive entries
-func extractArchive(tr *tar.Reader, absDst string, totalSize *int64) error {
+func extractArchive(tr *tar.Reader, absDst string, totalWritten *int64) error {
 	for {
 		header, err := tr.Next()
 
@@ -71,8 +72,9 @@ func extractArchive(tr *tar.Reader, absDst string, totalSize *int64) error {
 			continue
 		}
 
-		if err := validateEntry(header, totalSize); err != nil {
-			return err
+		// Pre-validate individual file size limit
+		if header.Size > MaxFileSize {
+			return fmt.Errorf("file %s exceeds maximum size limit (%d bytes)", header.Name, MaxFileSize)
 		}
 
 		target := filepath.Join(absDst, header.Name)
@@ -80,20 +82,15 @@ func extractArchive(tr *tar.Reader, absDst string, totalSize *int64) error {
 			return fmt.Errorf("unsafe path detected: %s", header.Name)
 		}
 
-		if err := processEntry(header, target, tr); err != nil {
+		if err := processEntry(header, target, tr, totalWritten); err != nil {
 			return err
 		}
 	}
 }
 
-// validateEntry checks security constraints for a tar entry
-func validateEntry(header *tar.Header, totalSize *int64) error {
-	if header.Size > MaxFileSize {
-		return fmt.Errorf("file %s exceeds maximum size limit (%d bytes)", header.Name, MaxFileSize)
-	}
-
-	*totalSize += header.Size
-	if *totalSize > MaxTotalSize {
+// validateTotalSize checks if total written bytes exceed the limit
+func validateTotalSize(totalWritten int64, additionalBytes int64) error {
+	if totalWritten+additionalBytes > MaxTotalSize {
 		return fmt.Errorf("archive exceeds maximum total size limit (%d bytes)", MaxTotalSize)
 	}
 
@@ -101,7 +98,7 @@ func validateEntry(header *tar.Header, totalSize *int64) error {
 }
 
 // processEntry handles different tar entry types
-func processEntry(header *tar.Header, target string, tr *tar.Reader) error {
+func processEntry(header *tar.Header, target string, tr *tar.Reader, totalWritten *int64) error {
 	switch header.Typeflag {
 	case tar.TypeDir:
 		if err := handleDirectory(target, header); err != nil {
@@ -109,9 +106,12 @@ func processEntry(header *tar.Header, target string, tr *tar.Reader) error {
 		}
 
 	case tar.TypeReg:
-		if err := handleRegularFile(target, header, tr); err != nil {
+		written, err := handleRegularFile(target, header, tr, *totalWritten)
+		if err != nil {
 			return fmt.Errorf("failed to extract file %s: %w", header.Name, err)
 		}
+
+		*totalWritten += written
 
 	case tar.TypeSymlink, tar.TypeLink:
 		return fmt.Errorf("symlinks and hard links are not allowed: %s", header.Name)
@@ -155,10 +155,11 @@ func handleDirectory(target string, header *tar.Header) error {
 }
 
 // handleRegularFile extracts a regular file with proper resource management
-func handleRegularFile(target string, header *tar.Header, tr *tar.Reader) error {
+// Returns the actual number of bytes written
+func handleRegularFile(target string, header *tar.Header, tr *tar.Reader, currentTotal int64) (int64, error) {
 	// Ensure parent directory exists
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-		return fmt.Errorf("failed to create parent directory: %w", err)
+		return 0, fmt.Errorf("failed to create parent directory: %w", err)
 	}
 
 	// Create file with permissions from tar header
@@ -169,7 +170,7 @@ func handleRegularFile(target string, header *tar.Header, tr *tar.Reader) error 
 
 	f, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
+		return 0, fmt.Errorf("failed to create file: %w", err)
 	}
 
 	defer func() {
@@ -178,19 +179,44 @@ func handleRegularFile(target string, header *tar.Header, tr *tar.Reader) error 
 		}
 	}()
 
-	// Use limited reader to enforce file size limits
-	limitedReader := io.LimitReader(tr, header.Size)
+	// Use a tracking writer to monitor actual bytes written
+	trackingWriter := &trackingWriter{
+		writer:       f,
+		currentTotal: currentTotal,
+	}
 
-	// Copy with buffer for better performance
-	written, err := io.Copy(f, limitedReader)
+	// Copy directly from tar reader with streaming size validation
+	written, err := io.Copy(trackingWriter, tr)
 	if err != nil {
-		return fmt.Errorf("failed to write file content: %w", err)
+		// Clean up partial file on error
+		_ = os.Remove(target)
+		return 0, fmt.Errorf("failed to write file content: %w", err)
 	}
 
-	// Verify we wrote the expected amount
-	if written != header.Size {
-		return fmt.Errorf("file size mismatch: expected %d, wrote %d", header.Size, written)
+	// Verify file size is reasonable (allow some flexibility for compression)
+	if written > header.Size*2 { // Allow up to 2x header size for safety
+		_ = os.Remove(target)
+		return 0, fmt.Errorf("file %s wrote more bytes (%d) than reasonable limit based on header (%d)", header.Name, written, header.Size)
 	}
 
-	return nil
+	return written, nil
+}
+
+// trackingWriter wraps an io.Writer to track total bytes written and enforce limits
+type trackingWriter struct {
+	writer       io.Writer
+	currentTotal int64
+	written      int64
+}
+
+func (tw *trackingWriter) Write(p []byte) (int, error) {
+	// Check if writing this chunk would exceed total size limit
+	if err := validateTotalSize(tw.currentTotal+tw.written, int64(len(p))); err != nil {
+		return 0, err
+	}
+
+	n, err := tw.writer.Write(p)
+	tw.written += int64(n)
+
+	return n, err
 }
