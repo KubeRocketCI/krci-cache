@@ -35,7 +35,7 @@ jobs:
         run: make build-all
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: krci-cache-binaries
           path: dist/krci-cache-*
