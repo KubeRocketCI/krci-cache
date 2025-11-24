@@ -9,7 +9,7 @@ LABEL org.opencontainers.image.title="krci-cache" \
 # Install required packages with version pinning
 RUN apk add --no-cache \
     tar=1.35-r3 \
-    rsync=3.4.1-r0 \
+    rsync=3.4.1-r1 \
     && rm -rf /var/cache/apk/*
 
 # Copy the pre-built binary from dist folder
