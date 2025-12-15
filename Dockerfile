@@ -1,4 +1,4 @@
-FROM alpine:3.22
+FROM alpine:3.23
 
 # Set metadata labels
 LABEL org.opencontainers.image.title="krci-cache" \
@@ -8,7 +8,7 @@ LABEL org.opencontainers.image.title="krci-cache" \
 
 # Install required packages with version pinning
 RUN apk add --no-cache \
-    tar=1.35-r3 \
+    tar=1.35-r4 \
     rsync=3.4.1-r1 \
     && rm -rf /var/cache/apk/*
 
