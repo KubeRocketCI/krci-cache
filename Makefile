@@ -34,7 +34,7 @@ $(DIST_DIR):
 	mkdir -p $(DIST_DIR)
 
 # Tool Versions
-GOLANGCI_LINT_VERSION ?= v1.64.7
+GOLANGCI_LINT_VERSION ?= v2.8.0
 CHAINSAW_VERSION ?= v0.2.12
 KIND_VERSION ?= v0.29.0
 KUSTOMIZE_VERSION ?= v5.6.0
@@ -64,7 +64,7 @@ install-tools: golangci-lint chainsaw kind kustomize ## Download all tools local
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
-	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 
 .PHONY: fmt
 fmt: ## Run go fmt against code

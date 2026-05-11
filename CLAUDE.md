@@ -86,35 +86,37 @@ make clean-all
 
 ### Server Configuration
 The server uses environment-based configuration with these key variables:
-- `UPLOADER_HOST`, `UPLOADER_PORT`: Server binding
-- `UPLOADER_DIRECTORY`: Upload directory (default: ./pub)
-- `UPLOADER_UPLOAD_CREDENTIALS`: Basic auth (format: username:password)
-- `UPLOADER_MAX_UPLOAD_SIZE`: Regular file size limit
-- `UPLOADER_MAX_CONCURRENT_UPLOADS`: Concurrency limit
-- `UPLOADER_REQUEST_TIMEOUT`: Request timeout
+- `UPLOADER_HOST`, `UPLOADER_PORT`: Server binding (defaults: `localhost`, `8080`)
+- `UPLOADER_DIRECTORY`: Upload directory (default: `./pub`)
+- `UPLOADER_UPLOAD_CREDENTIALS`: Basic auth (format: `username:password`); when unset, all endpoints are anonymous
+- `UPLOADER_MAX_UPLOAD_SIZE`: Maximum request body size enforced by `middleware.BodyLimit` (default: `8GB`; accepts suffixes like `100M`, `2G`)
+- `UPLOADER_SHUTDOWN_TIMEOUT`: Maximum time to wait for in-flight requests during graceful shutdown (default: `10m`; Go `time.ParseDuration` syntax)
 
 ### Security Features
-- Path traversal protection via `isPathSafe()` functions
-- Basic HTTP authentication for protected endpoints
-- Tar.gz extraction with size limits (2GB per file, 8GB total)
-- Symlink and hard link prevention in archives
-- Context-aware operations with cancellation support
+- Path traversal protection on every mutating endpoint: target must lie strictly inside the upload directory (sibling-prefix escapes like `/data` vs `/data-evil` are rejected — see `TestUploadSiblingPrefixTraversal`)
+- Basic HTTP authentication for protected endpoints; only `POST /upload`, `DELETE /upload`, `DELETE /delete` require credentials
+- Tar.gz extraction with streaming size limits (`MaxFileSize` 2GB per file, `MaxTotalSize` 8GB total) enforced via `trackingWriter`
+- Symlink and hard link entries in archives are rejected outright
+- Request body size limit via `middleware.BodyLimit` (`UPLOADER_MAX_UPLOAD_SIZE`)
 
 ### API Endpoints
-- `GET /health`: Health check with JSON response
+- `GET /health`: Health check with JSON response (always anonymous)
 - `POST /upload`: File upload with explicit tar.gz extraction (requires `targz=true` form parameter)
 - `DELETE /upload`: Single file deletion
-- `DELETE /delete`: Bulk deletion of old files
-- `HEAD /:path`: File metadata and caching headers
-- `GET /*`: Static file serving
+- `DELETE /delete`: Bulk deletion of files older than `days`
+- `HEAD /:path`: File metadata and caching headers (`Last-Modified`)
+- `GET /*`: Static file serving via `http.FileServer` (range/conditional GET/sendfile-backed on Linux)
 
-**Important**: Tar.gz extraction only occurs when explicitly requested with `targz=true` form parameter. Files with `.tar.gz` extension are stored as regular files unless this flag is set.
+**Important**: Tar.gz extraction only occurs when `targz=true` is sent as a form parameter. Files whose names end in `.tar.gz` are stored as regular files unless this flag is set.
 
 ### Concurrency Model
-- Semaphore-based upload limiting (`uploadSem` channel)
-- Context-aware operations for cancellation
-- Graceful shutdown with configurable timeout
-- Structured JSON logging with request tracing
+The request path holds no shared mutable state and uses no application-level locks (no `sync.Mutex`, no semaphore, no in-memory index). Concurrency is governed at the kernel level:
+- `http.Server.ReadHeaderTimeout` (10s) and `IdleTimeout` (120s) defend against slow clients without truncating legitimate large transfers. `ReadTimeout`/`WriteTimeout` are deliberately left at zero so they cannot abort multi-GB uploads/downloads.
+- `middleware.BodyLimit` (`UPLOADER_MAX_UPLOAD_SIZE`) enforces a hard cap on request body size with one integer comparison per request.
+- Graceful shutdown is triggered by `SIGINT`/`SIGTERM`; the server stops accepting new connections and waits up to `UPLOADER_SHUTDOWN_TIMEOUT` for in-flight requests to drain.
+- Static downloads use `http.FileServer` and benefit from `sendfile(2)` zero-copy on Linux; no userspace involvement in the byte loop.
+
+Future phases will add atomic publish via temp-file-plus-rename (single-file uploads) and directory-rename (tar uploads) to extend integrity guarantees to concurrent writers on the same path. These additions remain lock-free.
 
 ## Testing Strategy
 
