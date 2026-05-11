@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,7 +55,7 @@ func setupExtraction(dst string, r io.Reader) (string, *gzip.Reader, error) {
 // closeGzipReader safely closes the gzip reader
 func closeGzipReader(gzr *gzip.Reader) {
 	if closeErr := gzr.Close(); closeErr != nil {
-		fmt.Printf("warning: failed to close gzip reader: %v\n", closeErr)
+		log.Printf("warning: failed to close gzip reader: %v", closeErr)
 	}
 }
 
@@ -117,21 +118,17 @@ func processEntry(header *tar.Header, target string, tr *tar.Reader, totalWritte
 		return fmt.Errorf("symlinks and hard links are not allowed: %s", header.Name)
 
 	default:
-		fmt.Printf("warning: skipping unsupported file type %d for %s\n", header.Typeflag, header.Name)
+		log.Printf("warning: skipping unsupported file type %d for %s", header.Typeflag, header.Name)
 	}
 
 	return nil
 }
 
-// isPathSafe checks if the target path is within the destination directory
-func isPathSafe(target, dst string) bool {
-	absTarget, err := filepath.Abs(target)
-	if err != nil {
-		return false
-	}
-
-	// Ensure the target is within the destination directory
-	return strings.HasPrefix(absTarget, dst+string(filepath.Separator)) || absTarget == dst
+// isPathSafe reports whether absTarget equals absRoot or is a strict descendant.
+// Both arguments must already be absolute; the trailing separator in the prefix
+// check rejects sibling-prefix escapes (e.g. "/data" vs "/data-evil").
+func isPathSafe(absTarget, absRoot string) bool {
+	return absTarget == absRoot || strings.HasPrefix(absTarget, absRoot+string(filepath.Separator))
 }
 
 // handleDirectory creates a directory with proper permissions
@@ -175,7 +172,7 @@ func handleRegularFile(target string, header *tar.Header, tr *tar.Reader, curren
 
 	defer func() {
 		if closeErr := f.Close(); closeErr != nil {
-			fmt.Printf("warning: failed to close file %s: %v\n", target, closeErr)
+			log.Printf("warning: failed to close file %s: %v", target, closeErr)
 		}
 	}()
 

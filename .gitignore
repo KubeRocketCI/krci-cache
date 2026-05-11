@@ -12,3 +12,5 @@ bin/
 
 # ignore pub directory
 pub/
+
+.claude/settings.local.json

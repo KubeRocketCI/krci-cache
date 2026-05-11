@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -23,16 +24,14 @@ func setupTestServer(t *testing.T) (*echo.Echo, string) {
 	tempdir, err := os.MkdirTemp("", "uploader-test-*")
 	require.NoError(t, err)
 
-	// Set the directory variable for tests
 	originalDir := directory
-	directory = tempdir
 
-	// Create simple Echo instance like the main Uploader() function
+	require.NoError(t, setUploadDirectory(tempdir))
+
 	e := echo.New()
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 
-	// Routes
 	e.Static("/", directory)
 	e.GET("/health", healthCheck)
 	e.HEAD("/:path", lastModified)
@@ -41,7 +40,7 @@ func setupTestServer(t *testing.T) (*echo.Echo, string) {
 	e.DELETE("/delete", deleteOldFilesOfDir)
 
 	t.Cleanup(func() {
-		directory = originalDir
+		_ = setUploadDirectory(originalDir)
 
 		os.RemoveAll(tempdir)
 	})
@@ -137,6 +136,52 @@ func TestUploadDirectoryTraversal(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "DENIED")
 }
 
+// TestUploadSiblingPrefixTraversal guards the bug where HasPrefix without the
+// path separator allowed escape to a sibling directory whose name happens to
+// begin with the upload dir name (e.g. upload dir "/data" matched "/data-evil").
+func TestUploadSiblingPrefixTraversal(t *testing.T) {
+	parent, err := os.MkdirTemp("", "uploader-prefix-*")
+	require.NoError(t, err)
+	t.Cleanup(func() { os.RemoveAll(parent) })
+
+	uploadDir := filepath.Join(parent, "data")
+	siblingDir := filepath.Join(parent, "data-evil")
+
+	require.NoError(t, os.Mkdir(uploadDir, 0o755))
+	require.NoError(t, os.Mkdir(siblingDir, 0o755))
+
+	originalDir := directory
+
+	require.NoError(t, setUploadDirectory(uploadDir))
+
+	t.Cleanup(func() {
+		_ = setUploadDirectory(originalDir)
+	})
+
+	e := echo.New()
+	e.POST("/upload", upload)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "pwned.txt")
+	require.NoError(t, err)
+	_, err = part.Write([]byte("should not land in sibling"))
+	require.NoError(t, err)
+	require.NoError(t, writer.WriteField("path", "../data-evil/pwned.txt"))
+	require.NoError(t, writer.Close())
+
+	req := httptest.NewRequest(http.MethodPost, "/upload", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code, "must reject sibling-prefix escape")
+
+	_, statErr := os.Stat(filepath.Join(siblingDir, "pwned.txt"))
+	assert.True(t, os.IsNotExist(statErr), "file must not have been written to sibling dir")
+}
+
 func TestDeleteFile(t *testing.T) {
 	e, tempdir := setupTestServer(t)
 
@@ -164,62 +209,66 @@ func TestDeleteFile(t *testing.T) {
 	assert.True(t, os.IsNotExist(err))
 }
 
-func TestEnvironmentConfiguration(t *testing.T) {
-	// Test that environment variables are read correctly
-	originalDir := os.Getenv("UPLOADER_DIRECTORY")
-	originalHost := os.Getenv("UPLOADER_HOST")
-	originalPort := os.Getenv("UPLOADER_PORT")
+// saveServerGlobals snapshots the package-level `directory`, `host`, and
+// `port` (which `loadConfig` mutates as side effects) and registers a cleanup
+// that restores them. Restoring `directory` via `setUploadDirectory` keeps
+// `absRootDir` consistent with it.
+func saveServerGlobals(t *testing.T) {
+	t.Helper()
 
-	defer func() {
-		// Restore original values
-		if originalDir != "" {
-			os.Setenv("UPLOADER_DIRECTORY", originalDir)
-		} else {
-			os.Unsetenv("UPLOADER_DIRECTORY")
-		}
+	originalDir, originalHost, originalPort := directory, host, port
 
-		if originalHost != "" {
-			os.Setenv("UPLOADER_HOST", originalHost)
-		} else {
-			os.Unsetenv("UPLOADER_HOST")
-		}
+	t.Cleanup(func() {
+		_ = setUploadDirectory(originalDir)
+		host = originalHost
+		port = originalPort
+	})
+}
 
-		if originalPort != "" {
-			os.Setenv("UPLOADER_PORT", originalPort)
-		} else {
-			os.Unsetenv("UPLOADER_PORT")
-		}
-	}()
+func TestLoadConfig(t *testing.T) {
+	saveServerGlobals(t)
 
-	// Set test environment variables
-	testDir := "/test/upload/dir"
-	testHost := "test-host"
-	testPort := "9999"
+	tempdir := t.TempDir()
 
-	os.Setenv("UPLOADER_DIRECTORY", testDir)
-	os.Setenv("UPLOADER_HOST", testHost)
-	os.Setenv("UPLOADER_PORT", testPort)
+	t.Setenv("UPLOADER_DIRECTORY", tempdir)
+	t.Setenv("UPLOADER_HOST", "test-host")
+	t.Setenv("UPLOADER_PORT", "9999")
+	t.Setenv("UPLOADER_UPLOAD_CREDENTIALS", "user:pass")
+	t.Setenv("UPLOADER_MAX_UPLOAD_SIZE", "100M")
+	t.Setenv("UPLOADER_SHUTDOWN_TIMEOUT", "30s")
 
-	// Reset global variables
-	directory = "./pub" // default
-	host = "localhost"  // default
-	port = "8080"       // default
+	cfg, err := loadConfig()
+	require.NoError(t, err)
 
-	// This would be called in the Uploader() function
-	if os.Getenv("UPLOADER_DIRECTORY") != "" {
-		directory = os.Getenv("UPLOADER_DIRECTORY")
-	}
+	assert.Equal(t, tempdir, directory)
+	assert.Equal(t, "test-host", host)
+	assert.Equal(t, "9999", port)
 
-	if os.Getenv("UPLOADER_HOST") != "" {
-		host = os.Getenv("UPLOADER_HOST")
-	}
+	expectedAbs, err := filepath.Abs(tempdir)
+	require.NoError(t, err)
+	assert.Equal(t, expectedAbs, absRootDir)
 
-	if os.Getenv("UPLOADER_PORT") != "" {
-		port = os.Getenv("UPLOADER_PORT")
-	}
+	assert.Equal(t, "user:pass", cfg.credentials)
+	assert.Equal(t, "100M", cfg.maxUploadSize)
+	assert.Equal(t, 30*time.Second, cfg.shutdownTimeout)
+}
 
-	// Check that values were set correctly
-	assert.Equal(t, testDir, directory)
-	assert.Equal(t, testHost, host)
-	assert.Equal(t, testPort, port)
+func TestLoadConfigRejectsBadCredentials(t *testing.T) {
+	saveServerGlobals(t)
+
+	t.Setenv("UPLOADER_UPLOAD_CREDENTIALS", "missing-colon")
+
+	_, err := loadConfig()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "UPLOADER_UPLOAD_CREDENTIALS")
+}
+
+func TestLoadConfigRejectsBadShutdownTimeout(t *testing.T) {
+	saveServerGlobals(t)
+
+	t.Setenv("UPLOADER_SHUTDOWN_TIMEOUT", "not-a-duration")
+
+	_, err := loadConfig()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "UPLOADER_SHUTDOWN_TIMEOUT")
 }

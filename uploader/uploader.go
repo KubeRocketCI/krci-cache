@@ -2,15 +2,21 @@
 package uploader
 
 import (
+	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -18,69 +24,69 @@ import (
 )
 
 var (
-	// Default configuration values
 	host      = "localhost"
 	port      = "8080"
 	directory = "./pub"
+	// absRootDir is the resolved absolute form of `directory`, cached at startup
+	// so the per-request hot path (safeJoin) does no Abs syscalls. Always update
+	// it via setUploadDirectory to keep the two vars consistent.
+	absRootDir string
 )
 
-// Simple upload handler based on go-simple-uploader pattern
+// setUploadDirectory updates both `directory` and the cached `absRootDir` so
+// safeJoin sees a consistent view. Returns an error if the path cannot be
+// resolved to an absolute form.
+func setUploadDirectory(dir string) error {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("invalid upload directory %q: %w", dir, err)
+	}
+
+	directory = dir
+	absRootDir = abs
+
+	return nil
+}
+
+// safeJoin resolves rel inside the upload directory and returns its absolute
+// path. The trailing-separator check in isPathSafe rejects sibling-prefix
+// escapes such as "/data" vs "/data-evil".
+func safeJoin(rel string) (string, error) {
+	abspath := filepath.Join(absRootDir, rel)
+
+	if !isPathSafe(abspath, absRootDir) {
+		return "", echo.NewHTTPError(http.StatusForbidden, "DENIED: path escapes upload directory")
+	}
+
+	return abspath, nil
+}
+
 func upload(c echo.Context) error {
-	// Get the uploaded file - using Echo's simple method like go-simple-uploader
 	file, err := c.FormFile("file")
 	if err != nil {
 		return err
 	}
 
-	// Get form parameters
 	untargz := c.FormValue("targz")
 	path := c.FormValue("path")
 
-	// Use filename if no path specified
 	if path == "" {
 		path = file.Filename
 	}
 
-	// Directory traversal detection (same as go-simple-uploader)
-	savepath := filepath.Join(directory, path)
-	abspath, _ := filepath.Abs(savepath)
-	absuploaddir, _ := filepath.Abs(directory)
-
-	if !strings.HasPrefix(abspath, absuploaddir) {
-		return echo.NewHTTPError(http.StatusForbidden, "DENIED: You should not upload outside the upload directory.")
+	abspath, err := safeJoin(path)
+	if err != nil {
+		return err
 	}
 
-	// Handle tar.gz extraction
 	if untargz == "true" {
-		return handleTarGzUpload(c, file, path, savepath, abspath)
-	}
-
-	// Handle regular file upload
-	return handleRegularUpload(c, file, path, savepath)
-}
-
-// handleTarGzUpload handles tar.gz file extraction
-func handleTarGzUpload(c echo.Context, file *multipart.FileHeader, path, savepath, abspath string) error {
-	if err := os.MkdirAll(savepath, 0o755); err != nil {
-		return err
-	}
-
-	// Re-open file for tar extraction (same pattern as go-simple-uploader)
-	src, err := file.Open()
-	if err != nil {
-		return err
-	}
-
-	defer func() {
-		if closeErr := src.Close(); closeErr != nil {
-			fmt.Printf("Error closing tar source file: %v\n", closeErr)
+		if err := extractTarGz(file, abspath); err != nil {
+			return err
 		}
-	}()
-
-	err = UntarGz(abspath, src)
-	if err != nil {
-		fmt.Println(err.Error())
-		return err
+	} else {
+		if err := saveRegularFile(file, abspath); err != nil {
+			return err
+		}
 	}
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
@@ -91,9 +97,11 @@ func handleTarGzUpload(c echo.Context, file *multipart.FileHeader, path, savepat
 	})
 }
 
-// handleRegularUpload handles regular file uploads
-func handleRegularUpload(c echo.Context, file *multipart.FileHeader, path, savepath string) error {
-	// Open the uploaded file
+func extractTarGz(file *multipart.FileHeader, abspath string) error {
+	if err := os.MkdirAll(abspath, 0o755); err != nil {
+		return err
+	}
+
 	src, err := file.Open()
 	if err != nil {
 		return err
@@ -101,60 +109,62 @@ func handleRegularUpload(c echo.Context, file *multipart.FileHeader, path, savep
 
 	defer func() {
 		if closeErr := src.Close(); closeErr != nil {
-			fmt.Printf("Error closing source file: %v\n", closeErr)
+			log.Printf("error closing tar source file: %v", closeErr)
 		}
 	}()
 
-	// Create directory if needed
-	if _, err := os.Stat(savepath); os.IsNotExist(err) {
-		if err := os.MkdirAll(filepath.Dir(savepath), 0o755); err != nil {
-			return err
-		}
+	return UntarGz(abspath, src)
+}
+
+func saveRegularFile(file *multipart.FileHeader, abspath string) error {
+	src, err := file.Open()
+	if err != nil {
+		return err
 	}
 
-	dst, err := os.Create(savepath)
+	defer func() {
+		if closeErr := src.Close(); closeErr != nil {
+			log.Printf("error closing source file: %v", closeErr)
+		}
+	}()
+
+	if err := os.MkdirAll(filepath.Dir(abspath), 0o755); err != nil {
+		return err
+	}
+
+	dst, err := os.Create(abspath)
 	if err != nil {
 		return err
 	}
 
 	defer func() {
 		if closeErr := dst.Close(); closeErr != nil {
-			fmt.Printf("Error closing destination file: %v\n", closeErr)
+			log.Printf("error closing destination file: %v", closeErr)
 		}
 	}()
 
-	// Simple copy operation (same as go-simple-uploader)
-	if _, err = io.Copy(dst, src); err != nil {
-		return err
-	}
+	_, err = io.Copy(dst, src)
 
-	return c.JSON(http.StatusCreated, map[string]interface{}{
-		"message":  fmt.Sprintf("File has been uploaded to %s", path),
-		"filename": file.Filename,
-		"path":     path,
-		"size":     file.Size,
-	})
+	return err
 }
 
-// Simple delete handler
 func uploaderDelete(c echo.Context) error {
 	path := c.FormValue("path")
 
-	// Directory traversal detection
-	savePath := filepath.Join(directory, path)
-	abspath, _ := filepath.Abs(savePath)
-	absoluteUploadDir, _ := filepath.Abs(directory)
-
-	if !strings.HasPrefix(abspath, absoluteUploadDir) {
-		return echo.NewHTTPError(http.StatusForbidden, "DENIED: You should not upload outside the upload directory.")
+	abspath, err := safeJoin(path)
+	if err != nil {
+		return err
 	}
 
 	if _, err := os.Stat(abspath); err != nil {
-		return echo.NewHTTPError(http.StatusNotFound, "Could not find your file")
+		if errors.Is(err, fs.ErrNotExist) {
+			return echo.NewHTTPError(http.StatusNotFound, "Could not find your file")
+		}
+
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Could not stat your file: %s", err.Error()))
 	}
 
-	err := os.RemoveAll(abspath)
-	if err != nil {
+	if err := os.RemoveAll(abspath); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Could not delete your file: %s", err.Error()))
 	}
 
@@ -164,7 +174,6 @@ func uploaderDelete(c echo.Context) error {
 	})
 }
 
-// Health check handler
 func healthCheck(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"status":    "healthy",
@@ -173,20 +182,19 @@ func healthCheck(c echo.Context) error {
 	})
 }
 
-// Simple last modified handler
 func lastModified(c echo.Context) error {
-	path := c.Param("path")
-	filePath := filepath.Join(directory, path)
-	abspath, _ := filepath.Abs(filePath)
-	absoluteUploadDir, _ := filepath.Abs(directory)
-
-	if !strings.HasPrefix(abspath, absoluteUploadDir) {
-		return echo.NewHTTPError(http.StatusForbidden, "DENIED: You should not try to get outside the root directory.")
+	abspath, err := safeJoin(c.Param("path"))
+	if err != nil {
+		return err
 	}
 
 	info, err := os.Stat(abspath)
 	if err != nil {
-		return echo.NotFoundHandler(c)
+		if errors.Is(err, fs.ErrNotExist) {
+			return echo.NotFoundHandler(c)
+		}
+
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to stat file")
 	}
 
 	c.Response().Header().Set(echo.HeaderLastModified, info.ModTime().UTC().Format(http.TimeFormat))
@@ -194,36 +202,22 @@ func lastModified(c echo.Context) error {
 	return c.NoContent(http.StatusOK)
 }
 
-// Simple delete old files handler
 func deleteOldFilesOfDir(c echo.Context) error {
 	path := c.FormValue("path")
 	days, _ := strconv.Atoi(c.FormValue("days"))
-	recursiveFlag := c.FormValue("recursive")
+	recursive := c.FormValue("recursive") == "true"
 
-	if len(recursiveFlag) == 0 {
-		recursiveFlag = "false"
-	}
-
-	recursive, err := strconv.ParseBool(recursiveFlag)
+	abspath, err := safeJoin(path)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, "Invalid recursive parameter")
-	}
-
-	filePath := filepath.Join(directory, path)
-	abspath, _ := filepath.Abs(filePath)
-	absoluteUploadDir, _ := filepath.Abs(directory)
-
-	if !strings.HasPrefix(abspath, absoluteUploadDir) {
-		return echo.NewHTTPError(http.StatusForbidden, "DENIED: You should not try to get outside the root directory.")
-	}
-
-	_, err = os.Stat(abspath)
-	if err != nil {
-		return echo.NotFoundHandler(c)
+		return err
 	}
 
 	files, err := findFilesOlderThanXDays(abspath, days, recursive)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return echo.NotFoundHandler(c)
+		}
+
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to find old files")
 	}
 
@@ -241,7 +235,7 @@ func deleteOldFilesOfDir(c echo.Context) error {
 	for _, file := range files {
 		filePath := filepath.Join(abspath, file.Name())
 		if err := os.Remove(filePath); err != nil {
-			fmt.Printf("Failed to delete file %s: %v\n", file.Name(), err)
+			log.Printf("failed to delete file %s: %v", file.Name(), err)
 			continue
 		}
 
@@ -283,61 +277,163 @@ func findFilesOlderThanXDays(dir string, days int, recursive bool) (files []os.F
 	return files, nil
 }
 
-// Uploader starts the simplified upload server based on go-simple-uploader pattern
+// Default server tunables. Only header- and idle-level timeouts are set; body
+// read/write timeouts are deliberately left at zero so they cannot truncate
+// legitimate multi-GB cache transfers under slow clients or slow disks.
+const (
+	defaultMaxUploadSize   = "8GB"
+	defaultShutdownTimeout = 10 * time.Minute
+	readHeaderTimeout      = 10 * time.Second
+	idleTimeout            = 120 * time.Second
+	healthPath             = "/health"
+)
+
+type serverConfig struct {
+	maxUploadSize   string
+	shutdownTimeout time.Duration
+	credentials     string
+}
+
+func loadConfig() (serverConfig, error) {
+	dir := directory
+	if v := os.Getenv("UPLOADER_DIRECTORY"); v != "" {
+		dir = v
+	}
+
+	if v := os.Getenv("UPLOADER_HOST"); v != "" {
+		host = v
+	}
+
+	if v := os.Getenv("UPLOADER_PORT"); v != "" {
+		port = v
+	}
+
+	cfg := serverConfig{
+		maxUploadSize:   defaultMaxUploadSize,
+		shutdownTimeout: defaultShutdownTimeout,
+	}
+
+	if v := os.Getenv("UPLOADER_UPLOAD_CREDENTIALS"); v != "" {
+		if _, _, ok := strings.Cut(v, ":"); !ok {
+			return cfg, fmt.Errorf("UPLOADER_UPLOAD_CREDENTIALS must use 'username:password' format")
+		}
+
+		cfg.credentials = v
+	}
+
+	if v := os.Getenv("UPLOADER_MAX_UPLOAD_SIZE"); v != "" {
+		cfg.maxUploadSize = v
+	}
+
+	if v := os.Getenv("UPLOADER_SHUTDOWN_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return cfg, fmt.Errorf("invalid UPLOADER_SHUTDOWN_TIMEOUT %q: %w", v, err)
+		}
+
+		cfg.shutdownTimeout = d
+	}
+
+	if err := setUploadDirectory(dir); err != nil {
+		return cfg, err
+	}
+
+	return cfg, nil
+}
+
+// registerAuth mirrors go-simple-uploader: only mutating endpoints require creds.
+// rawCreds is assumed validated by loadConfig (contains ":"). The expected
+// username/password are converted to bytes once so the per-request validator is
+// allocation-free.
+func registerAuth(e *echo.Echo, rawCreds string) {
+	if rawCreds == "" {
+		return
+	}
+
+	user, pass, _ := strings.Cut(rawCreds, ":")
+	expectedUser := []byte(user)
+	expectedPass := []byte(pass)
+
+	c := middleware.DefaultBasicAuthConfig
+	c.Skipper = func(ctx echo.Context) bool {
+		if ctx.Path() == healthPath {
+			return true
+		}
+
+		method := ctx.Request().Method
+
+		return method == http.MethodHead || method == http.MethodGet
+	}
+	c.Validator = func(username, password string, _ echo.Context) (bool, error) {
+		if subtle.ConstantTimeCompare([]byte(username), expectedUser) == 1 &&
+			subtle.ConstantTimeCompare([]byte(password), expectedPass) == 1 {
+			return true, nil
+		}
+
+		return false, nil
+	}
+	e.Use(middleware.BasicAuthWithConfig(c))
+}
+
+func runWithGracefulShutdown(e *echo.Echo, addr string, shutdownTimeout time.Duration) error {
+	serverErr := make(chan error, 1)
+
+	go func() {
+		if err := e.Start(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+			return
+		}
+
+		serverErr <- nil
+	}()
+
+	stop := make(chan os.Signal, 1)
+
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(stop)
+
+	select {
+	case err := <-serverErr:
+		return err
+	case sig := <-stop:
+		log.Printf("received signal %s, shutting down (timeout=%s)", sig, shutdownTimeout)
+
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+
+		return e.Shutdown(ctx)
+	}
+}
+
+// Uploader starts the upload server and blocks until SIGINT/SIGTERM.
 func Uploader() error {
-	// Load configuration from environment
-	if os.Getenv("UPLOADER_DIRECTORY") != "" {
-		directory = os.Getenv("UPLOADER_DIRECTORY")
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
 	}
 
-	if os.Getenv("UPLOADER_HOST") != "" {
-		host = os.Getenv("UPLOADER_HOST")
-	}
-
-	if os.Getenv("UPLOADER_PORT") != "" {
-		port = os.Getenv("UPLOADER_PORT")
-	}
-
-	// Create simple Echo instance like go-simple-uploader
 	e := echo.New()
+	e.HideBanner = true
+	e.Server.ReadHeaderTimeout = readHeaderTimeout
+	e.Server.IdleTimeout = idleTimeout
 
-	// Only essential middleware
-	e.Use(middleware.Logger())
+	// Recover first so it catches panics in any later middleware. Logger wraps
+	// BodyLimit so 413 rejections are still logged.
 	e.Use(middleware.Recover())
+	e.Use(middleware.Logger())
+	e.Use(middleware.BodyLimit(cfg.maxUploadSize))
+	registerAuth(e, cfg.credentials)
 
-	// Routes
 	e.Static("/", directory)
-	e.GET("/health", healthCheck)
+	e.GET(healthPath, healthCheck)
 	e.HEAD("/:path", lastModified)
 	e.POST("/upload", upload)
 	e.DELETE("/upload", uploaderDelete)
 	e.DELETE("/delete", deleteOldFilesOfDir)
 
-	// Simple auth setup (same pattern as go-simple-uploader)
-	if os.Getenv("UPLOADER_UPLOAD_CREDENTIALS") != "" {
-		creds := strings.Split(os.Getenv("UPLOADER_UPLOAD_CREDENTIALS"), ":")
-		c := middleware.DefaultBasicAuthConfig
-		c.Skipper = func(c echo.Context) bool {
-			if c.Path() == "/health" {
-				return true
-			}
+	addr := fmt.Sprintf("%s:%s", host, port)
+	log.Printf("krci-cache listening on %s (directory=%s, max_upload=%s, shutdown_timeout=%s)",
+		addr, directory, cfg.maxUploadSize, cfg.shutdownTimeout)
 
-			if (c.Request().Method == "HEAD" || c.Request().Method == "GET") && c.Path() != "/upload" && c.Path() != "/delete" {
-				return true
-			}
-
-			return false
-		}
-		c.Validator = func(username, password string, c echo.Context) (bool, error) {
-			if subtle.ConstantTimeCompare([]byte(username), []byte(creds[0])) == 1 &&
-				subtle.ConstantTimeCompare([]byte(password), []byte(strings.Join(creds[1:], ":"))) == 1 {
-				return true, nil
-			}
-
-			return false, nil
-		}
-		e.Use(middleware.BasicAuthWithConfig(c))
-	}
-
-	return e.Start(fmt.Sprintf("%s:%s", host, port))
+	return runWithGracefulShutdown(e, addr, cfg.shutdownTimeout)
 }

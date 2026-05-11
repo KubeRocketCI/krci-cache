@@ -16,6 +16,7 @@ import (
 func TestUntarGz(t *testing.T) {
 	tempdir, err := os.MkdirTemp("", "test-untar")
 	require.NoError(t, err)
+
 	defer os.RemoveAll(tempdir)
 
 	// Create test tar.gz data
@@ -51,11 +52,13 @@ func TestUntarGz(t *testing.T) {
 func TestUntarGz_MemoryOptimizedSizeValidation(t *testing.T) {
 	tempdir, err := os.MkdirTemp("", "test-untar-memory")
 	require.NoError(t, err)
+
 	defer os.RemoveAll(tempdir)
 
 	// Create tar.gz with multiple moderate-sized files
 	// The key test is that we don't pre-allocate huge amounts of memory
 	var buf bytes.Buffer
+
 	gzw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gzw)
 
@@ -102,11 +105,13 @@ func TestUntarGz_MemoryOptimizedSizeValidation(t *testing.T) {
 func TestUntarGz_ActualSizeTracking(t *testing.T) {
 	tempdir, err := os.MkdirTemp("", "test-untar-size-tracking")
 	require.NoError(t, err)
+
 	defer os.RemoveAll(tempdir)
 
 	// Create multiple files that are reasonably sized
 	// This tests that our size tracking works correctly with real data
 	var buf bytes.Buffer
+
 	gzw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gzw)
 
@@ -157,10 +162,12 @@ func TestUntarGz_TotalSizeLimit(t *testing.T) {
 
 	tempdir, err := os.MkdirTemp("", "test-untar-size-limit")
 	require.NoError(t, err)
+
 	defer os.RemoveAll(tempdir)
 
 	// Create a small archive but use custom trackingWriter to simulate reaching the limit
 	var buf bytes.Buffer
+
 	gzw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gzw)
 
@@ -230,6 +237,7 @@ func TestTrackingWriter(t *testing.T) {
 func TestUntarGzInvalidData(t *testing.T) {
 	tempdir, err := os.MkdirTemp("", "test-untar-invalid")
 	require.NoError(t, err)
+
 	defer os.RemoveAll(tempdir)
 
 	// Test with invalid gzip data
@@ -244,6 +252,7 @@ func TestUntarGzInvalidData(t *testing.T) {
 func TestUntarGzPathTraversal(t *testing.T) {
 	tempdir, err := os.MkdirTemp("", "test-untar-traversal")
 	require.NoError(t, err)
+
 	defer os.RemoveAll(tempdir)
 
 	// Create malicious tar.gz with path traversal
@@ -258,6 +267,7 @@ func TestUntarGzPathTraversal(t *testing.T) {
 func TestUntarGzSymlinkRejection(t *testing.T) {
 	tempdir, err := os.MkdirTemp("", "test-untar-symlink")
 	require.NoError(t, err)
+
 	defer os.RemoveAll(tempdir)
 
 	// Create tar.gz with symlink
@@ -272,10 +282,12 @@ func TestUntarGzSymlinkRejection(t *testing.T) {
 func TestUntarGzFileSizeLimit(t *testing.T) {
 	tempdir, err := os.MkdirTemp("", "test-untar-size-limit")
 	require.NoError(t, err)
+
 	defer os.RemoveAll(tempdir)
 
 	// Create an archive with a single file that exceeds individual file size limit
 	var buf bytes.Buffer
+
 	gzw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gzw)
 
@@ -303,6 +315,7 @@ func TestUntarGzFileSizeLimit(t *testing.T) {
 func TestUntarGzTotalSizeLimit(t *testing.T) {
 	tempdir, err := os.MkdirTemp("", "test-untar-total-size-limit")
 	require.NoError(t, err)
+
 	defer os.RemoveAll(tempdir)
 
 	// Test the validateTotalSize function with edge cases
@@ -324,6 +337,7 @@ func TestUntarGzTotalSizeLimit(t *testing.T) {
 func TestUntarGzDirectoryPermissions(t *testing.T) {
 	tempdir, err := os.MkdirTemp("", "test-untar-perms")
 	require.NoError(t, err)
+
 	defer os.RemoveAll(tempdir)
 
 	// Create a tar.gz with specific directory permissions
@@ -343,6 +357,7 @@ func TestUntarGzDirectoryPermissions(t *testing.T) {
 // Helper function to create basic test tar.gz
 func createTestTarGz(t *testing.T) []byte {
 	var buf bytes.Buffer
+
 	gw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gw)
 
@@ -390,6 +405,7 @@ func createTestTarGz(t *testing.T) []byte {
 // Helper function to create malicious tar.gz with path traversal
 func createMaliciousTarGz(t *testing.T) []byte {
 	var buf bytes.Buffer
+
 	gw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gw)
 
@@ -416,6 +432,7 @@ func createMaliciousTarGz(t *testing.T) []byte {
 // Helper function to create tar.gz with symlink
 func createSymlinkTarGz(t *testing.T) []byte {
 	var buf bytes.Buffer
+
 	gw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gw)
 
@@ -440,6 +457,7 @@ func createSymlinkTarGz(t *testing.T) []byte {
 // Helper function to create tar.gz with specific directory permissions
 func createPermissionsTarGz(t *testing.T) []byte {
 	var buf bytes.Buffer
+
 	gw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gw)
 
