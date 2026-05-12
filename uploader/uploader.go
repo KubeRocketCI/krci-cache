@@ -151,7 +151,7 @@ func upload(c echo.Context) error {
 		return err
 	}
 
-	if err := publishConsumed(abspath, stagedTmp, stagedDir, wantTarGz(fields)); err != nil {
+	if err := publishConsumed(c.Request().Context(), abspath, stagedTmp, stagedDir, wantTarGz(fields)); err != nil {
 		return err
 	}
 
@@ -183,12 +183,12 @@ func resolveDestination(fields map[string]string, filename string) (string, stri
 	return resolvedPath, abspath, nil
 }
 
-func publishConsumed(abspath, stagedTmp, stagedDir string, tarGz bool) error {
+func publishConsumed(ctx context.Context, abspath, stagedTmp, stagedDir string, tarGz bool) error {
 	switch {
 	case stagedDir != "":
-		return publishDir(abspath, stagedDir)
+		return publishDir(ctx, abspath, stagedDir)
 	case tarGz:
-		return extractStagedTempToDir(stagedTmp, abspath)
+		return extractStagedTempToDir(ctx, stagedTmp, abspath)
 	default:
 		return publishStaged(stagedTmp, abspath)
 	}
@@ -300,7 +300,7 @@ func streamTarToStageDir(r io.Reader) (string, int64, error) {
 
 // Late-path tar fallback: the file part arrived before targz=true was known,
 // so we already streamed it to a temp file and now have to extract it.
-func extractStagedTempToDir(stagedPath, finalPath string) error {
+func extractStagedTempToDir(ctx context.Context, stagedPath, finalPath string) error {
 	src, err := os.Open(stagedPath)
 	if err != nil {
 		return fmt.Errorf("open staged: %w", err)
@@ -322,7 +322,7 @@ func extractStagedTempToDir(stagedPath, finalPath string) error {
 		return err
 	}
 
-	if err := publishDir(finalPath, stage); err != nil {
+	if err := publishDir(ctx, finalPath, stage); err != nil {
 		removeAllLogged(stage)
 		return err
 	}

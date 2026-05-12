@@ -34,7 +34,12 @@ func UntarGz(dst string, r io.Reader) error {
 	// Track actual bytes written instead of header-declared sizes
 	var totalWritten int64
 
-	return extractArchive(tr, absDst, &totalWritten)
+	// Cache of parent dirs already ensured during this extraction. Bounded
+	// by archive contents (~50B * unique-dir-count) and freed on return.
+	// Eliminates the per-entry MkdirAll fan-out that costs ~1ms/call on NFS.
+	ensuredDirs := make(map[string]struct{})
+
+	return extractArchive(tr, absDst, &totalWritten, ensuredDirs)
 }
 
 // setupExtraction prepares the destination and gzip reader
@@ -60,7 +65,11 @@ func closeGzipReader(gzr *gzip.Reader) {
 }
 
 // extractArchive processes the tar archive entries
-func extractArchive(tr *tar.Reader, absDst string, totalWritten *int64) error {
+func extractArchive(tr *tar.Reader, absDst string, totalWritten *int64, ensuredDirs map[string]struct{}) error {
+	// Pre-seed: absDst is created by the caller of UntarGz before extraction,
+	// so files whose parent is the root skip a redundant MkdirAll.
+	ensuredDirs[absDst] = struct{}{}
+
 	for {
 		header, err := tr.Next()
 
@@ -73,7 +82,6 @@ func extractArchive(tr *tar.Reader, absDst string, totalWritten *int64) error {
 			continue
 		}
 
-		// Pre-validate individual file size limit
 		if header.Size > MaxFileSize {
 			return fmt.Errorf("file %s exceeds maximum size limit (%d bytes)", header.Name, MaxFileSize)
 		}
@@ -83,7 +91,7 @@ func extractArchive(tr *tar.Reader, absDst string, totalWritten *int64) error {
 			return fmt.Errorf("unsafe path detected: %s", header.Name)
 		}
 
-		if err := processEntry(header, target, tr, totalWritten); err != nil {
+		if err := processEntry(header, target, tr, totalWritten, ensuredDirs); err != nil {
 			return err
 		}
 	}
@@ -99,15 +107,17 @@ func validateTotalSize(totalWritten int64, additionalBytes int64) error {
 }
 
 // processEntry handles different tar entry types
-func processEntry(header *tar.Header, target string, tr *tar.Reader, totalWritten *int64) error {
+func processEntry(header *tar.Header, target string, tr *tar.Reader, totalWritten *int64, ensuredDirs map[string]struct{}) error {
 	switch header.Typeflag {
 	case tar.TypeDir:
 		if err := handleDirectory(target, header); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", header.Name, err)
 		}
 
+		ensuredDirs[target] = struct{}{}
+
 	case tar.TypeReg:
-		written, err := handleRegularFile(target, header, tr, *totalWritten)
+		written, err := handleRegularFile(target, header, tr, *totalWritten, ensuredDirs)
 		if err != nil {
 			return fmt.Errorf("failed to extract file %s: %w", header.Name, err)
 		}
@@ -131,21 +141,13 @@ func isPathSafe(absTarget, absRoot string) bool {
 	return absTarget == absRoot || strings.HasPrefix(absTarget, absRoot+string(filepath.Separator))
 }
 
-// handleDirectory creates a directory with proper permissions
+// handleDirectory creates a directory with proper permissions.
+// MkdirAll is idempotent on an existing directory and surfaces a clear
+// ENOTDIR if the path exists as a file — no separate Stat needed.
 func handleDirectory(target string, header *tar.Header) error {
-	// Check if directory already exists
-	if info, err := os.Stat(target); err == nil {
-		if !info.IsDir() {
-			return fmt.Errorf("path exists but is not a directory: %s", target)
-		}
-
-		return nil // Directory already exists
-	}
-
-	// Create directory with permissions from tar header, but ensure minimum safety
 	mode := os.FileMode(header.Mode) & os.ModePerm
 	if mode == 0 {
-		mode = 0755 // Default safe permissions
+		mode = 0755
 	}
 
 	return os.MkdirAll(target, mode)
@@ -153,13 +155,16 @@ func handleDirectory(target string, header *tar.Header) error {
 
 // handleRegularFile extracts a regular file with proper resource management
 // Returns the actual number of bytes written
-func handleRegularFile(target string, header *tar.Header, tr *tar.Reader, currentTotal int64) (int64, error) {
-	// Ensure parent directory exists
-	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-		return 0, fmt.Errorf("failed to create parent directory: %w", err)
+func handleRegularFile(target string, header *tar.Header, tr *tar.Reader, currentTotal int64, ensuredDirs map[string]struct{}) (int64, error) {
+	parent := filepath.Dir(target)
+	if _, ok := ensuredDirs[parent]; !ok {
+		if err := os.MkdirAll(parent, 0755); err != nil {
+			return 0, fmt.Errorf("failed to create parent directory: %w", err)
+		}
+
+		ensuredDirs[parent] = struct{}{}
 	}
 
-	// Create file with permissions from tar header
 	mode := os.FileMode(header.Mode) & os.ModePerm
 	if mode == 0 {
 		mode = 0644 // Default safe permissions for files
@@ -176,16 +181,13 @@ func handleRegularFile(target string, header *tar.Header, tr *tar.Reader, curren
 		}
 	}()
 
-	// Use a tracking writer to monitor actual bytes written
 	trackingWriter := &trackingWriter{
 		writer:       f,
 		currentTotal: currentTotal,
 	}
 
-	// Copy directly from tar reader with streaming size validation
 	written, err := io.Copy(trackingWriter, tr)
 	if err != nil {
-		// Clean up partial file on error
 		_ = os.Remove(target)
 		return 0, fmt.Errorf("failed to write file content: %w", err)
 	}
@@ -207,7 +209,6 @@ type trackingWriter struct {
 }
 
 func (tw *trackingWriter) Write(p []byte) (int, error) {
-	// Check if writing this chunk would exceed total size limit
 	if err := validateTotalSize(tw.currentTotal+tw.written, int64(len(p))); err != nil {
 		return 0, err
 	}
