@@ -1,4 +1,3 @@
-// Package uploader provides HTTP upload server functionality with support for file uploads and tar.gz extraction.
 package uploader
 
 import (
@@ -8,48 +7,16 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// setupTestServer creates a minimal test server for the simplified implementation
-func setupTestServer(t *testing.T) (*echo.Echo, string) {
-	// Create temp directory
-	tempdir, err := os.MkdirTemp("", "uploader-test-*")
-	require.NoError(t, err)
-
-	originalDir := directory
-
-	require.NoError(t, setUploadDirectory(tempdir))
-
-	e := echo.New()
-	e.Use(middleware.Logger())
-	e.Use(middleware.Recover())
-
-	e.Static("/", directory)
-	e.GET("/health", healthCheck)
-	e.HEAD("/:path", lastModified)
-	e.POST("/upload", upload)
-	e.DELETE("/upload", uploaderDelete)
-	e.DELETE("/delete", deleteOldFilesOfDir)
-
-	t.Cleanup(func() {
-		_ = setUploadDirectory(originalDir)
-
-		os.RemoveAll(tempdir)
-	})
-
-	return e, tempdir
-}
-
 func TestHealthCheck(t *testing.T) {
-	e, _ := setupTestServer(t)
+	e, _ := concurrencyServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -63,75 +30,27 @@ func TestHealthCheck(t *testing.T) {
 }
 
 func TestUploadSimpleFile(t *testing.T) {
-	e, tempdir := setupTestServer(t)
+	e, tempdir := concurrencyServer(t)
 
-	// Create multipart form
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-
-	// Add file part
-	part, err := writer.CreateFormFile("file", "test.txt")
-	require.NoError(t, err)
-	_, err = part.Write([]byte("test content"))
-	require.NoError(t, err)
-
-	// Add path field
-	err = writer.WriteField("path", "test.txt")
-	require.NoError(t, err)
-
-	err = writer.Close()
-	require.NoError(t, err)
-
-	// Create request
-	req := httptest.NewRequest(http.MethodPost, "/upload", body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
+	req := buildUploadRequest(t, "test.txt", []byte("test content"), "")
 	rec := httptest.NewRecorder()
-
-	// Execute request
 	e.ServeHTTP(rec, req)
 
-	// Check response
 	assert.Equal(t, http.StatusCreated, rec.Code)
 	assert.Contains(t, rec.Body.String(), "File has been uploaded to")
 
-	// Verify file was created
-	filePath := filepath.Join(tempdir, "test.txt")
-	content, err := os.ReadFile(filePath)
+	content, err := os.ReadFile(filepath.Join(tempdir, "test.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "test content", string(content))
 }
 
 func TestUploadDirectoryTraversal(t *testing.T) {
-	e, _ := setupTestServer(t)
+	e, _ := concurrencyServer(t)
 
-	// Create multipart form with malicious path
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-
-	// Add file part
-	part, err := writer.CreateFormFile("file", "test.txt")
-	require.NoError(t, err)
-	_, err = part.Write([]byte("malicious content"))
-	require.NoError(t, err)
-
-	// Add malicious path field
-	err = writer.WriteField("path", "../../../../../../etc/passwd")
-	require.NoError(t, err)
-
-	err = writer.Close()
-	require.NoError(t, err)
-
-	// Create request
-	req := httptest.NewRequest(http.MethodPost, "/upload", body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
+	req := buildUploadRequest(t, "../../../../../../etc/passwd", []byte("malicious content"), "")
 	rec := httptest.NewRecorder()
-
-	// Execute request
 	e.ServeHTTP(rec, req)
 
-	// Should be forbidden
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 	assert.Contains(t, rec.Body.String(), "DENIED")
 }
@@ -183,30 +102,40 @@ func TestUploadSiblingPrefixTraversal(t *testing.T) {
 }
 
 func TestDeleteFile(t *testing.T) {
-	e, tempdir := setupTestServer(t)
+	e, tempdir := concurrencyServer(t)
 
-	// Create a test file
 	testFile := filepath.Join(tempdir, "delete-me.txt")
-	err := os.WriteFile(testFile, []byte("delete this"), 0644)
-	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(testFile, []byte("delete this"), 0644))
 
-	// Create delete request
-	body := strings.NewReader("path=delete-me.txt")
-	req := httptest.NewRequest(http.MethodDelete, "/upload", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
+	req := buildDeleteRequest(t, "/upload", map[string]string{"path": "delete-me.txt"})
 	rec := httptest.NewRecorder()
-
-	// Execute request
 	e.ServeHTTP(rec, req)
 
-	// Check response
 	assert.Equal(t, http.StatusAccepted, rec.Code)
 	assert.Contains(t, rec.Body.String(), "has been deleted")
 
-	// Verify file was deleted
-	_, err = os.Stat(testFile)
+	_, err := os.Stat(testFile)
 	assert.True(t, os.IsNotExist(err))
+}
+
+// TestDeleteRejectsEmptyPath pins down the security guard that prevents a
+// missing or unparseable form body from accidentally wiping the cache root.
+// Without the guard, the previous behavior was: empty path -> safeJoin
+// returns the upload directory itself -> RemoveAll deletes everything.
+func TestDeleteRejectsEmptyPath(t *testing.T) {
+	e, tempdir := concurrencyServer(t)
+
+	// Seed a file so we'd notice if the root got wiped.
+	require.NoError(t, os.WriteFile(filepath.Join(tempdir, "guard.txt"), []byte("keep"), 0o644))
+
+	req := buildDeleteRequest(t, "/upload", map[string]string{"path": ""})
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	_, err := os.Stat(filepath.Join(tempdir, "guard.txt"))
+	assert.NoError(t, err, "upload root must not be wiped by an empty-path DELETE")
 }
 
 // saveServerGlobals snapshots the package-level `directory`, `host`, and
