@@ -77,6 +77,10 @@ func TestUploadSiblingPrefixTraversal(t *testing.T) {
 		_ = setUploadDirectory(originalDir)
 	})
 
+	// Production handler requires the staging dir; streamed uploads land
+	// there before path validation runs.
+	require.NoError(t, setupStagingDir())
+
 	e := echo.New()
 	e.POST("/upload", upload)
 
