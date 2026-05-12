@@ -6,7 +6,6 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"mime/multipart"
@@ -27,15 +26,14 @@ var (
 	host      = "localhost"
 	port      = "8080"
 	directory = "./pub"
-	// absRootDir is the resolved absolute form of `directory`, cached at startup
-	// so the per-request hot path (safeJoin) does no Abs syscalls. Always update
-	// it via setUploadDirectory to keep the two vars consistent.
+	// Resolved absolute form of `directory`, cached so the per-request hot
+	// path does no Abs syscalls. Always update via setUploadDirectory.
 	absRootDir string
+	// Staging dir; must live on the same filesystem as absRootDir for
+	// rename(2) to be atomic.
+	absStagePath string
 )
 
-// setUploadDirectory updates both `directory` and the cached `absRootDir` so
-// safeJoin sees a consistent view. Returns an error if the path cannot be
-// resolved to an absolute form.
 func setUploadDirectory(dir string) error {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -44,14 +42,21 @@ func setUploadDirectory(dir string) error {
 
 	directory = dir
 	absRootDir = abs
+	absStagePath = filepath.Join(abs, stagingDir)
 
 	return nil
 }
 
 // safeJoin resolves rel inside the upload directory and returns its absolute
 // path. The trailing-separator check in isPathSafe rejects sibling-prefix
-// escapes such as "/data" vs "/data-evil".
+// escapes such as "/data" vs "/data-evil". Paths that target the staging
+// directory (".tmp/...") are rejected because that dir holds in-flight
+// uploads that users must not observe or mutate.
 func safeJoin(rel string) (string, error) {
+	if isStagingPath(rel) {
+		return "", echo.NewHTTPError(http.StatusForbidden, "DENIED: path is reserved")
+	}
+
 	abspath := filepath.Join(absRootDir, rel)
 
 	if !isPathSafe(abspath, absRootDir) {
@@ -97,11 +102,7 @@ func upload(c echo.Context) error {
 	})
 }
 
-func extractTarGz(file *multipart.FileHeader, abspath string) error {
-	if err := os.MkdirAll(abspath, 0o755); err != nil {
-		return err
-	}
-
+func extractTarGz(file *multipart.FileHeader, finalPath string) error {
 	src, err := file.Open()
 	if err != nil {
 		return err
@@ -113,10 +114,39 @@ func extractTarGz(file *multipart.FileHeader, abspath string) error {
 		}
 	}()
 
-	return UntarGz(abspath, src)
+	stage, err := os.MkdirTemp(absStagePath, "tar-*")
+	if err != nil {
+		return fmt.Errorf("create staging dir: %w", err)
+	}
+
+	// MkdirTemp's 0700 default would break sidecars/backups running as other UIDs.
+	if err := os.Chmod(stage, 0o755); err != nil {
+		removeAllLogged(stage)
+		return fmt.Errorf("chmod staging dir: %w", err)
+	}
+
+	committed := false
+
+	defer func() {
+		if !committed {
+			removeAllLogged(stage)
+		}
+	}()
+
+	if err := UntarGz(stage, src); err != nil {
+		return err
+	}
+
+	if err := publishDir(finalPath, stage); err != nil {
+		return err
+	}
+
+	committed = true
+
+	return nil
 }
 
-func saveRegularFile(file *multipart.FileHeader, abspath string) error {
+func saveRegularFile(file *multipart.FileHeader, finalPath string) error {
 	src, err := file.Open()
 	if err != nil {
 		return err
@@ -128,28 +158,19 @@ func saveRegularFile(file *multipart.FileHeader, abspath string) error {
 		}
 	}()
 
-	if err := os.MkdirAll(filepath.Dir(abspath), 0o755); err != nil {
-		return err
-	}
-
-	dst, err := os.Create(abspath)
-	if err != nil {
-		return err
-	}
-
-	defer func() {
-		if closeErr := dst.Close(); closeErr != nil {
-			log.Printf("error closing destination file: %v", closeErr)
-		}
-	}()
-
-	_, err = io.Copy(dst, src)
-
-	return err
+	return publishFile(finalPath, src)
 }
 
 func uploaderDelete(c echo.Context) error {
 	path := c.FormValue("path")
+
+	// Reject empty path explicitly: safeJoin("") resolves to the upload root.
+	// Without this guard, a DELETE with a missing or unparseable body (e.g.
+	// urlencoded body on DELETE, which net/http does not parse) would wipe
+	// the entire cache directory.
+	if path == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "path is required")
+	}
 
 	abspath, err := safeJoin(path)
 	if err != nil {
@@ -234,8 +255,19 @@ func deleteOldFilesOfDir(c echo.Context) error {
 
 	for _, file := range files {
 		filePath := filepath.Join(abspath, file.Name())
-		if err := os.Remove(filePath); err != nil {
-			log.Printf("failed to delete file %s: %v", file.Name(), err)
+
+		// recursive=true allows directory entries; for those we must use
+		// RemoveAll because Remove fails on non-empty dirs. This restores
+		// the reference behavior that a prior refactor lost.
+		var rmErr error
+		if recursive && file.IsDir() {
+			rmErr = os.RemoveAll(filePath)
+		} else {
+			rmErr = os.Remove(filePath)
+		}
+
+		if rmErr != nil {
+			log.Printf("failed to delete %s: %v", file.Name(), rmErr)
 			continue
 		}
 
@@ -261,7 +293,15 @@ func findFilesOlderThanXDays(dir string, days int, recursive bool) (files []os.F
 		return nil, err
 	}
 
+	// Skip the staging dir when sweeping the upload root so a misconfigured
+	// cron (path="", recursive=true, days=0) can't wipe in-flight uploads.
+	skipStaging := dir == absRootDir
+
 	for _, file := range tmpfiles {
+		if skipStaging && file.Name() == stagingDir {
+			continue
+		}
+
 		info, err := file.Info()
 		if err != nil {
 			continue
@@ -341,6 +381,16 @@ func loadConfig() (serverConfig, error) {
 	return cfg, nil
 }
 
+// Shared between Uploader() and the test server so route registration cannot drift.
+func registerRoutes(e *echo.Echo, fileServer http.Handler) {
+	e.GET(healthPath, healthCheck)
+	e.HEAD("/:path", lastModified)
+	e.POST("/upload", upload)
+	e.DELETE("/upload", uploaderDelete)
+	e.DELETE("/delete", deleteOldFilesOfDir)
+	e.GET("/*", echo.WrapHandler(fileServer))
+}
+
 // registerAuth mirrors go-simple-uploader: only mutating endpoints require creds.
 // rawCreds is assumed validated by loadConfig (contains ":"). The expected
 // username/password are converted to bytes once so the per-request validator is
@@ -412,24 +462,30 @@ func Uploader() error {
 		return err
 	}
 
+	if err := setupStagingDir(); err != nil {
+		return err
+	}
+
+	// The multipart parser spools parts >32MB into os.TempDir(); on
+	// readOnlyRootFilesystem pods the default /tmp is unwritable so every
+	// large upload would fail with EROFS. Point TMPDIR at our writable PVC.
+	if err := os.Setenv("TMPDIR", absStagePath); err != nil {
+		log.Printf("failed to set TMPDIR=%s: %v (multipart spool may fail on readOnlyRootFilesystem pods)", absStagePath, err)
+	}
+
 	e := echo.New()
 	e.HideBanner = true
 	e.Server.ReadHeaderTimeout = readHeaderTimeout
 	e.Server.IdleTimeout = idleTimeout
 
-	// Recover first so it catches panics in any later middleware. Logger wraps
-	// BodyLimit so 413 rejections are still logged.
+	// Recover first so it catches panics in later middleware; Logger wraps
+	// BodyLimit so 413s are still logged.
 	e.Use(middleware.Recover())
 	e.Use(middleware.Logger())
 	e.Use(middleware.BodyLimit(cfg.maxUploadSize))
 	registerAuth(e, cfg.credentials)
 
-	e.Static("/", directory)
-	e.GET(healthPath, healthCheck)
-	e.HEAD("/:path", lastModified)
-	e.POST("/upload", upload)
-	e.DELETE("/upload", uploaderDelete)
-	e.DELETE("/delete", deleteOldFilesOfDir)
+	registerRoutes(e, http.FileServer(hideStagingFS{root: http.Dir(absRootDir)}))
 
 	addr := fmt.Sprintf("%s:%s", host, port)
 	log.Printf("krci-cache listening on %s (directory=%s, max_upload=%s, shutdown_timeout=%s)",
