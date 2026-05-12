@@ -130,6 +130,19 @@ func sweepStagingOrphans(stage string) {
 	}
 }
 
+// stagedPath must be on the same filesystem as dst for the rename to be atomic.
+func publishStaged(stagedPath, dst string) error {
+	if err := ensureParentDir(dst); err != nil {
+		return err
+	}
+
+	if err := os.Rename(stagedPath, dst); err != nil {
+		return fmt.Errorf("publish rename: %w", err)
+	}
+
+	return nil
+}
+
 // Atomically replaces dst with the bytes from r via temp file + rename(2).
 // Concurrent publishers race on the rename; last write wins, no torn bytes.
 func publishFile(dst string, r io.Reader) error {

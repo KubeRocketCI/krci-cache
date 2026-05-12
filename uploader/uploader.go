@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"mime/multipart"
@@ -66,99 +67,279 @@ func safeJoin(rel string) (string, error) {
 	return abspath, nil
 }
 
+// MultipartReader bypasses Echo's ParseMultipartForm memory cap, so we
+// bound non-file fields here to prevent unbounded in-memory buffering.
+const maxUploadFieldSize = 1 << 20
+
+func wantTarGz(fields map[string]string) bool { return fields["targz"] == "true" }
+
+// Field order drives the early-rejection optimization: when `path` is
+// buffered before the file part, safeJoin runs before we touch the body
+// and a bad-path 403 costs zero disk I/O. curl -F preserves CLI order;
+// clients that send `path` first get the win.
 func upload(c echo.Context) error {
-	file, err := c.FormFile("file")
+	mr, err := c.Request().MultipartReader()
 	if err != nil {
-		return err
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("expected multipart request: %s", err))
 	}
 
-	untargz := c.FormValue("targz")
-	path := c.FormValue("path")
-
-	if path == "" {
-		path = file.Filename
-	}
-
-	abspath, err := safeJoin(path)
-	if err != nil {
-		return err
-	}
-
-	if untargz == "true" {
-		if err := extractTarGz(file, abspath); err != nil {
-			return err
-		}
-	} else {
-		if err := saveRegularFile(file, abspath); err != nil {
-			return err
-		}
-	}
-
-	return c.JSON(http.StatusCreated, map[string]interface{}{
-		"message":  fmt.Sprintf("File has been uploaded to %s", path),
-		"filename": file.Filename,
-		"path":     path,
-		"size":     file.Size,
-	})
-}
-
-func extractTarGz(file *multipart.FileHeader, finalPath string) error {
-	src, err := file.Open()
-	if err != nil {
-		return err
-	}
+	var (
+		fields    = make(map[string]string, 4)
+		haveFile  bool
+		filename  string
+		size      int64
+		stagedTmp string
+		stagedDir string
+		committed bool
+	)
 
 	defer func() {
-		if closeErr := src.Close(); closeErr != nil {
-			log.Printf("error closing tar source file: %v", closeErr)
+		// stagedTmp must be removed unconditionally: on the regular-file path
+		// it's renamed away (Remove no-ops on ENOENT); on the late-path tar
+		// fallback extractStagedTempToDir reads it but doesn't unlink it.
+		// A `!committed` guard here would leak the temp on the late-tar path.
+		if stagedTmp != "" {
+			_ = os.Remove(stagedTmp)
+		}
+
+		if !committed && stagedDir != "" {
+			removeAllLogged(stagedDir)
 		}
 	}()
 
-	stage, err := os.MkdirTemp(absStagePath, "tar-*")
-	if err != nil {
-		return fmt.Errorf("create staging dir: %w", err)
-	}
-
-	// MkdirTemp's 0700 default would break sidecars/backups running as other UIDs.
-	if err := os.Chmod(stage, 0o755); err != nil {
-		removeAllLogged(stage)
-		return fmt.Errorf("chmod staging dir: %w", err)
-	}
-
-	committed := false
-
-	defer func() {
-		if !committed {
-			removeAllLogged(stage)
+	for {
+		part, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
 		}
-	}()
 
-	if err := UntarGz(stage, src); err != nil {
+		if err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("read multipart: %s", err))
+		}
+
+		if part.FormName() != "file" {
+			if err := readField(part, fields); err != nil {
+				return err
+			}
+
+			continue
+		}
+
+		if haveFile {
+			return echo.NewHTTPError(http.StatusBadRequest, "multiple file parts not supported")
+		}
+
+		haveFile = true
+		filename = part.FileName()
+
+		tmp, dir, n, err := consumeFilePart(part, fields, filename)
+		stagedTmp = tmp
+		stagedDir = dir
+		size = n
+
+		if err != nil {
+			return err
+		}
+	}
+
+	if !haveFile {
+		return echo.NewHTTPError(http.StatusBadRequest, "missing 'file' part")
+	}
+
+	resolvedPath, abspath, err := resolveDestination(fields, filename)
+	if err != nil {
 		return err
 	}
 
-	if err := publishDir(finalPath, stage); err != nil {
+	if err := publishConsumed(abspath, stagedTmp, stagedDir, wantTarGz(fields)); err != nil {
 		return err
 	}
 
 	committed = true
 
+	return c.JSON(http.StatusCreated, map[string]interface{}{
+		"message":  fmt.Sprintf("File has been uploaded to %s", resolvedPath),
+		"filename": filename,
+		"path":     resolvedPath,
+		"size":     size,
+	})
+}
+
+func resolveDestination(fields map[string]string, filename string) (string, string, error) {
+	resolvedPath := fields["path"]
+	if resolvedPath == "" {
+		resolvedPath = filename
+	}
+
+	if resolvedPath == "" {
+		return "", "", echo.NewHTTPError(http.StatusBadRequest, "missing destination path (set 'path' field or file Content-Disposition filename)")
+	}
+
+	abspath, err := safeJoin(resolvedPath)
+	if err != nil {
+		return "", "", err
+	}
+
+	return resolvedPath, abspath, nil
+}
+
+func publishConsumed(abspath, stagedTmp, stagedDir string, tarGz bool) error {
+	switch {
+	case stagedDir != "":
+		return publishDir(abspath, stagedDir)
+	case tarGz:
+		return extractStagedTempToDir(stagedTmp, abspath)
+	default:
+		return publishStaged(stagedTmp, abspath)
+	}
+}
+
+func consumeFilePart(part *multipart.Part, fields map[string]string, filename string) (string, string, int64, error) {
+	if rawPath, ok := fields["path"]; ok {
+		candidate := rawPath
+		if candidate == "" {
+			candidate = filename
+		}
+
+		// Early reject: do NOT call part.Close() on failure — Close drains
+		// the part body (io.Copy(io.Discard, p)), defeating the saved I/O.
+		if _, err := safeJoin(candidate); err != nil {
+			return "", "", 0, err
+		}
+
+		if wantTarGz(fields) {
+			dir, n, err := streamTarToStageDir(part)
+			return "", dir, n, err
+		}
+	}
+
+	tmp, n, err := streamPartToStagedTemp(part)
+
+	return tmp, "", n, err
+}
+
+func readField(part *multipart.Part, fields map[string]string) error {
+	name := part.FormName()
+
+	buf, err := io.ReadAll(io.LimitReader(part, maxUploadFieldSize+1))
+	_ = part.Close()
+
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("read form field %q: %s", name, err))
+	}
+
+	if int64(len(buf)) > maxUploadFieldSize {
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("form field %q exceeds %d bytes", name, maxUploadFieldSize))
+	}
+
+	fields[name] = string(buf)
+
 	return nil
 }
 
-func saveRegularFile(file *multipart.FileHeader, finalPath string) error {
-	src, err := file.Open()
+// On error returns the temp path (when create succeeded) so the caller
+// can Remove it — deviates from the usual zero-value-on-error convention.
+func streamPartToStagedTemp(r io.Reader) (string, int64, error) {
+	f, err := os.CreateTemp(absStagePath, "up-*")
 	if err != nil {
-		return err
+		return "", 0, fmt.Errorf("create temp: %w", err)
+	}
+
+	tmpPath := f.Name()
+
+	// CreateTemp's 0600 default would break sidecars/backups running as other UIDs.
+	if err := f.Chmod(0o644); err != nil {
+		_ = f.Close()
+		return tmpPath, 0, fmt.Errorf("chmod temp: %w", err)
+	}
+
+	n, copyErr := io.Copy(f, r)
+	closeErr := f.Close()
+
+	if copyErr != nil {
+		return tmpPath, n, fmt.Errorf("write temp: %w", copyErr)
+	}
+
+	if closeErr != nil {
+		return tmpPath, n, fmt.Errorf("close temp: %w", closeErr)
+	}
+
+	return tmpPath, n, nil
+}
+
+// 0755 (not MkdirTemp's 0700) keeps published artifacts readable by
+// sidecars/backups running as different UIDs.
+func createTarStageDir() (string, error) {
+	stage, err := os.MkdirTemp(absStagePath, "tar-*")
+	if err != nil {
+		return "", fmt.Errorf("create staging dir: %w", err)
+	}
+
+	if err := os.Chmod(stage, 0o755); err != nil {
+		removeAllLogged(stage)
+		return "", fmt.Errorf("chmod staging dir: %w", err)
+	}
+
+	return stage, nil
+}
+
+// On UntarGz error returns the stage dir path so the caller can clean up.
+func streamTarToStageDir(r io.Reader) (string, int64, error) {
+	stage, err := createTarStageDir()
+	if err != nil {
+		return "", 0, err
+	}
+
+	cr := &countingReader{r: r}
+	if err := UntarGz(stage, cr); err != nil {
+		return stage, cr.n, err
+	}
+
+	return stage, cr.n, nil
+}
+
+// Late-path tar fallback: the file part arrived before targz=true was known,
+// so we already streamed it to a temp file and now have to extract it.
+func extractStagedTempToDir(stagedPath, finalPath string) error {
+	src, err := os.Open(stagedPath)
+	if err != nil {
+		return fmt.Errorf("open staged: %w", err)
 	}
 
 	defer func() {
 		if closeErr := src.Close(); closeErr != nil {
-			log.Printf("error closing source file: %v", closeErr)
+			log.Printf("error closing staged tar source: %v", closeErr)
 		}
 	}()
 
-	return publishFile(finalPath, src)
+	stage, err := createTarStageDir()
+	if err != nil {
+		return err
+	}
+
+	if err := UntarGz(stage, src); err != nil {
+		removeAllLogged(stage)
+		return err
+	}
+
+	if err := publishDir(finalPath, stage); err != nil {
+		removeAllLogged(stage)
+		return err
+	}
+
+	return nil
+}
+
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+
+	return n, err
 }
 
 func uploaderDelete(c echo.Context) error {
