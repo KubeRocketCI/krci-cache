@@ -1,6 +1,7 @@
 package uploader
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -192,7 +193,11 @@ func publishFile(dst string, r io.Reader) error {
 // RENAME_EXCHANGE on Linux and a two-step rename elsewhere. The two-step
 // path retries on ENOTEMPTY/EEXIST when a concurrent publisher slots in
 // between our move-aside and our rename.
-func publishDir(dst, stage string) error {
+//
+// The retry loop honors ctx so a disconnected HTTP client (CI worker
+// timeout, pipeline cancellation) doesn't keep the server burning cycles
+// on a doomed publish.
+func publishDir(ctx context.Context, dst, stage string) error {
 	if err := ensureParentDir(dst); err != nil {
 		return err
 	}
@@ -204,7 +209,7 @@ func publishDir(dst, stage string) error {
 	var lastErr error
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		err := tryPublishDir(dst, stage)
+		err := tryPublishDir(ctx, dst, stage)
 		if err == nil {
 			return nil
 		}
@@ -215,14 +220,26 @@ func publishDir(dst, stage string) error {
 
 		lastErr = err
 
-		time.Sleep(backoff)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+
 		backoff *= 2
 	}
 
 	return fmt.Errorf("publish gave up after %d attempts: %w", maxAttempts, lastErr)
 }
 
-func tryPublishDir(dst, stage string) error {
+func tryPublishDir(ctx context.Context, dst, stage string) error {
+	// Skip an attempted rename when the client has already disconnected;
+	// avoids a partial move-aside that the retry loop would then have to
+	// undo.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	switch err := swapPaths(stage, dst); {
 	case err == nil:
 		go removeAllLogged(stage)
