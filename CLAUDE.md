@@ -116,8 +116,6 @@ The request path holds no shared mutable state and uses no application-level loc
 - Graceful shutdown is triggered by `SIGINT`/`SIGTERM`; the server stops accepting new connections and waits up to `UPLOADER_SHUTDOWN_TIMEOUT` for in-flight requests to drain.
 - Static downloads use `http.FileServer` and benefit from `sendfile(2)` zero-copy on Linux; no userspace involvement in the byte loop.
 
-Future phases will add atomic publish via temp-file-plus-rename (single-file uploads) and directory-rename (tar uploads) to extend integrity guarantees to concurrent writers on the same path. These additions remain lock-free.
-
 ## Testing Strategy
 
 ### Unit Tests
@@ -134,18 +132,8 @@ Future phases will add atomic publish via temp-file-plus-rename (single-file upl
 
 ## Development Workflow
 
-1. **Code Changes**: Make changes following existing patterns
-2. **Format**: Run `make fmt vet` before committing
-3. **Test**: Run `make test` to ensure all tests pass
-4. **Lint**: Run `make lint` to check code quality
-5. **E2E**: Run `make e2e-setup-cluster && make e2e-test` for integration testing
-6. **Build**: Run `make build` to verify compilation
-
-## Important Notes
-
-- Always run `make lint` and `make test` before committing changes
-- Security is critical - never bypass path traversal or size limit checks
-- All file operations should be context-aware for proper cancellation
-- Use structured logging with slog for observability
-- Follow the existing error handling patterns with proper HTTP status codes
-- When adding new endpoints, ensure proper authentication integration
+- Before committing: `make fmt vet` → `make test` → `make lint` (then `make build` to verify compilation).
+- Integration check: `make e2e-setup-cluster && make e2e-test`.
+- Never bypass path-traversal or size-limit checks (see Security Features).
+- File operations must be context-aware (honor cancellation); log via `slog`.
+- New endpoints must integrate with the existing Basic-auth middleware.
