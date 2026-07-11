@@ -1,8 +1,4 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Repository Overview
+# krci-cache
 
 KubeRocketCI Cache (krci-cache) is a high-performance HTTP caching server for CI/CD pipeline artifacts, built in Go with the Echo framework. It supports file uploads, tar.gz extraction, and secure file management with production-grade features like authentication, concurrent upload limiting, and observability.
 
@@ -16,6 +12,7 @@ KubeRocketCI Cache (krci-cache) is a high-performance HTTP caching server for CI
 ## Common Development Commands
 
 ### Building and Testing
+
 ```bash
 # Build binary for current architecture
 make build
@@ -38,6 +35,7 @@ make vet
 ```
 
 ### Linting
+
 ```bash
 # Run golangci-lint
 make lint
@@ -47,6 +45,7 @@ make lint-fix
 ```
 
 ### Docker Operations
+
 ```bash
 # Build Docker image
 make docker-build
@@ -56,6 +55,7 @@ make docker-push
 ```
 
 ### E2E Testing
+
 ```bash
 # Setup complete e2e environment
 make e2e-setup-cluster
@@ -68,6 +68,7 @@ make e2e-cleanup
 ```
 
 ### Tool Management
+
 ```bash
 # Install all development tools
 make install-tools
@@ -85,7 +86,9 @@ make clean-all
 ## Architecture
 
 ### Server Configuration
+
 The server uses environment-based configuration with these key variables:
+
 - `UPLOADER_HOST`, `UPLOADER_PORT`: Server binding (defaults: `localhost`, `8080`)
 - `UPLOADER_DIRECTORY`: Upload directory (default: `./pub`)
 - `UPLOADER_UPLOAD_CREDENTIALS`: Basic auth (format: `username:password`); when unset, all endpoints are anonymous
@@ -93,6 +96,7 @@ The server uses environment-based configuration with these key variables:
 - `UPLOADER_SHUTDOWN_TIMEOUT`: Maximum time to wait for in-flight requests during graceful shutdown (default: `10m`; Go `time.ParseDuration` syntax)
 
 ### Security Features
+
 - Path traversal protection on every mutating endpoint: target must lie strictly inside the upload directory (sibling-prefix escapes like `/data` vs `/data-evil` are rejected — see `TestUploadSiblingPrefixTraversal`)
 - Basic HTTP authentication for protected endpoints; only `POST /upload`, `DELETE /upload`, `DELETE /delete` require credentials
 - Tar.gz extraction with streaming size limits (`MaxFileSize` 2GB per file, `MaxTotalSize` 8GB total) enforced via `trackingWriter`
@@ -100,6 +104,7 @@ The server uses environment-based configuration with these key variables:
 - Request body size limit via `middleware.BodyLimit` (`UPLOADER_MAX_UPLOAD_SIZE`)
 
 ### API Endpoints
+
 - `GET /health`: Health check with JSON response (always anonymous)
 - `POST /upload`: File upload with explicit tar.gz extraction (requires `targz=true` form parameter)
 - `DELETE /upload`: Single file deletion
@@ -110,7 +115,9 @@ The server uses environment-based configuration with these key variables:
 **Important**: Tar.gz extraction only occurs when `targz=true` is sent as a form parameter. Files whose names end in `.tar.gz` are stored as regular files unless this flag is set.
 
 ### Concurrency Model
+
 The request path holds no shared mutable state and uses no application-level locks (no `sync.Mutex`, no semaphore, no in-memory index). Concurrency is governed at the kernel level:
+
 - `http.Server.ReadHeaderTimeout` (10s) and `IdleTimeout` (120s) defend against slow clients without truncating legitimate large transfers. `ReadTimeout`/`WriteTimeout` are deliberately left at zero so they cannot abort multi-GB uploads/downloads.
 - `middleware.BodyLimit` (`UPLOADER_MAX_UPLOAD_SIZE`) enforces a hard cap on request body size with one integer comparison per request.
 - Graceful shutdown is triggered by `SIGINT`/`SIGTERM`; the server stops accepting new connections and waits up to `UPLOADER_SHUTDOWN_TIMEOUT` for in-flight requests to drain.
@@ -119,21 +126,15 @@ The request path holds no shared mutable state and uses no application-level loc
 ## Testing Strategy
 
 ### Unit Tests
+
 - `uploader_test.go`: Server functionality, security, configuration
 - `untar_test.go`: Archive extraction, security validations, edge cases
 - Use testify/assert for assertions
 - Test both success and failure scenarios
 
 ### E2E Tests
+
 - Kubernetes-based testing with Chainsaw framework
 - Kind cluster for local testing
 - Tests deployment, health checks, and service accessibility
 - Located in `e2e/` directory with automated setup
-
-## Development Workflow
-
-- Before committing: `make fmt vet` → `make test` → `make lint` (then `make build` to verify compilation).
-- Integration check: `make e2e-setup-cluster && make e2e-test`.
-- Never bypass path-traversal or size-limit checks (see Security Features).
-- File operations must be context-aware (honor cancellation); log via `slog`.
-- New endpoints must integrate with the existing Basic-auth middleware.
