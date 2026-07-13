@@ -38,6 +38,7 @@ GOLANGCI_LINT_VERSION ?= v2.8.0
 CHAINSAW_VERSION ?= v0.2.12
 KIND_VERSION ?= v0.29.0
 KUSTOMIZE_VERSION ?= v5.6.0
+GITCHGLOG_VERSION ?= v0.15.4
 
 # Kind cluster configuration
 KUBE_VERSION ?= 1.32
@@ -57,6 +58,7 @@ GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint
 CHAINSAW ?= $(LOCALBIN)/chainsaw
 KIND ?= $(LOCALBIN)/kind
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
+GITCHGLOG ?= $(LOCALBIN)/git-chglog
 
 .PHONY: install-tools
 install-tools: golangci-lint chainsaw kind kustomize ## Download all tools locally if necessary
@@ -97,6 +99,20 @@ test-coverage: test ## Run tests and generate coverage report
 .PHONY: test-short
 test-short: ## Run tests in short mode
 	go test -short -v ./...
+
+# use https://github.com/git-chglog/git-chglog/
+.PHONY: changelog
+changelog: git-chglog ## Generate CHANGELOG.md from conventional commits
+ifneq (${NEXT_RELEASE_TAG},)
+	$(GITCHGLOG) --next-tag v${NEXT_RELEASE_TAG} -o CHANGELOG.md
+else
+	$(GITCHGLOG) -o CHANGELOG.md
+endif
+
+.PHONY: git-chglog
+git-chglog: $(GITCHGLOG) ## Download git-chglog locally if necessary
+$(GITCHGLOG): $(LOCALBIN)
+	$(call go-install-tool,$(GITCHGLOG),github.com/git-chglog/git-chglog/cmd/git-chglog,$(GITCHGLOG_VERSION))
 
 build: $(DIST_DIR) ## Build the binary file following EDP pattern
 	CGO_ENABLED=0 GOOS=${HOST_OS} GOARCH=${HOST_ARCH} go build -v \
