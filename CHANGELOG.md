@@ -1,6 +1,9 @@
 <a name="unreleased"></a>
 ## [Unreleased]
 
+
+<a name="v0.3.0"></a>
+## [v0.3.0] - 2026-07-13
 ### Bug Fixes
 
 - update rsync pin to 3.4.3-r0 to unblock Docker build
@@ -11,6 +14,7 @@
 
 ### CI
 
+- automate changelog, release notes, and commit validation
 - bump actions/checkout from 6 to 7
 
 ### Dependencies
@@ -104,4 +108,5 @@
 - update dependencies
 
 
-[Unreleased]: https://github.com/KubeRocketCI/krci-cache/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/KubeRocketCI/krci-cache/compare/v0.3.0...HEAD
+[v0.3.0]: https://github.com/KubeRocketCI/krci-cache/compare/v0.2.0...v0.3.0
