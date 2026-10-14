@@ -1,7 +1,7 @@
 name: E2E Tests with Chainsaw
 
 env:
-  GO_VERSION: '1.25.8'
+  GO_VERSION: '1.26'
 
 on:
   pull_request:
@@ -46,6 +46,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true
           cache: true
           cache-dependency-path: |
             go.sum
