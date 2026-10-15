@@ -7,7 +7,8 @@ KubeRocketCI Cache (krci-cache) is a high-performance HTTP caching server for CI
 - **main.go**: Application entry point with structured logging and graceful shutdown
 - **uploader/uploader.go**: Core HTTP server with Echo framework, authentication, and file operations
 - **uploader/untar.go**: Secure tar.gz extraction with size limits and path traversal protection
-- **uploader/uploader_test.go** and **uploader/untar_test.go**: Comprehensive test suites
+- **uploader/request_logger.go**: JSON access-log middleware; deliberately reproduces echo 4.13.4's default `middleware.Logger` field names and types (log parsers depend on them) on top of `RequestLoggerWithConfig`, because `middleware.Logger` is deprecated
+- **uploader/uploader_test.go**, **uploader/untar_test.go** and **uploader/request_logger_test.go**: Comprehensive test suites
 
 ## Common Development Commands
 
