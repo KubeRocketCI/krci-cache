@@ -662,7 +662,7 @@ func Uploader() error {
 	// Recover first so it catches panics in later middleware; Logger wraps
 	// BodyLimit so 413s are still logged.
 	e.Use(middleware.Recover())
-	e.Use(middleware.Logger())
+	e.Use(requestLogger(os.Stdout))
 	e.Use(middleware.BodyLimit(cfg.maxUploadSize))
 	registerAuth(e, cfg.credentials)
 
