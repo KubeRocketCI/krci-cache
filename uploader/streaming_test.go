@@ -22,7 +22,7 @@ func TestUploadEarlyRejectionFieldsFirst(t *testing.T) {
 
 	body := &bytes.Buffer{}
 	w := multipart.NewWriter(body)
-	require.NoError(t, w.WriteField("path", "../../escape.bin"))
+	require.NoError(t, w.WriteField(pathField, "../../escape.bin"))
 
 	part, err := w.CreateFormFile("file", "evil.bin")
 	require.NoError(t, err)
@@ -61,7 +61,7 @@ func TestUploadStreamExtractFieldsFirst(t *testing.T) {
 
 	body := &bytes.Buffer{}
 	w := multipart.NewWriter(body)
-	require.NoError(t, w.WriteField("path", "stream-dir"))
+	require.NoError(t, w.WriteField(pathField, "stream-dir"))
 	require.NoError(t, w.WriteField("targz", "true"))
 
 	part, err := w.CreateFormFile("file", "stream.tar.gz")
@@ -94,7 +94,7 @@ func TestUploadRejectsOversizedField(t *testing.T) {
 	w := multipart.NewWriter(body)
 
 	// path field just past the 1 MiB cap.
-	require.NoError(t, w.WriteField("path", strings.Repeat("a", maxUploadFieldSize+1)))
+	require.NoError(t, w.WriteField(pathField, strings.Repeat("a", maxUploadFieldSize+1)))
 
 	part, err := w.CreateFormFile("file", "x.bin")
 	require.NoError(t, err)
@@ -118,7 +118,7 @@ func TestUploadRejectsMultipleFileParts(t *testing.T) {
 
 	body := &bytes.Buffer{}
 	w := multipart.NewWriter(body)
-	require.NoError(t, w.WriteField("path", "out.bin"))
+	require.NoError(t, w.WriteField(pathField, "out.bin"))
 
 	part1, err := w.CreateFormFile("file", "a.bin")
 	require.NoError(t, err)

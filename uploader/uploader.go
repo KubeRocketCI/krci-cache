@@ -158,15 +158,15 @@ func upload(c echo.Context) error {
 	committed = true
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
-		"message":  fmt.Sprintf("File has been uploaded to %s", resolvedPath),
+		messageKey: fmt.Sprintf("File has been uploaded to %s", resolvedPath),
 		"filename": filename,
-		"path":     resolvedPath,
+		pathField:  resolvedPath,
 		"size":     size,
 	})
 }
 
 func resolveDestination(fields map[string]string, filename string) (string, string, error) {
-	resolvedPath := fields["path"]
+	resolvedPath := fields[pathField]
 	if resolvedPath == "" {
 		resolvedPath = filename
 	}
@@ -195,7 +195,7 @@ func publishConsumed(ctx context.Context, abspath, stagedTmp, stagedDir string, 
 }
 
 func consumeFilePart(part *multipart.Part, fields map[string]string, filename string) (string, string, int64, error) {
-	if rawPath, ok := fields["path"]; ok {
+	if rawPath, ok := fields[pathField]; ok {
 		candidate := rawPath
 		if candidate == "" {
 			candidate = filename
@@ -343,7 +343,7 @@ func (c *countingReader) Read(p []byte) (int, error) {
 }
 
 func uploaderDelete(c echo.Context) error {
-	path := c.FormValue("path")
+	path := c.FormValue(pathField)
 
 	// Reject empty path explicitly: safeJoin("") resolves to the upload root.
 	// Without this guard, a DELETE with a missing or unparseable body (e.g.
@@ -371,8 +371,8 @@ func uploaderDelete(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusAccepted, map[string]interface{}{
-		"message": fmt.Sprintf("File %s has been deleted", path),
-		"path":    path,
+		messageKey: fmt.Sprintf("File %s has been deleted", path),
+		pathField:  path,
 	})
 }
 
@@ -385,7 +385,7 @@ func healthCheck(c echo.Context) error {
 }
 
 func lastModified(c echo.Context) error {
-	abspath, err := safeJoin(c.Param("path"))
+	abspath, err := safeJoin(c.Param(pathField))
 	if err != nil {
 		return err
 	}
@@ -405,7 +405,7 @@ func lastModified(c echo.Context) error {
 }
 
 func deleteOldFilesOfDir(c echo.Context) error {
-	path := c.FormValue("path")
+	path := c.FormValue(pathField)
 	days, _ := strconv.Atoi(c.FormValue("days"))
 	recursive := c.FormValue("recursive") == "true"
 
@@ -425,10 +425,10 @@ func deleteOldFilesOfDir(c echo.Context) error {
 
 	if len(files) == 0 {
 		return c.JSON(http.StatusAccepted, map[string]interface{}{
-			"message": "No old files found to delete",
-			"path":    path,
-			"days":    days,
-			"count":   0,
+			messageKey: "No old files found to delete",
+			pathField:  path,
+			"days":     days,
+			"count":    0,
 		})
 	}
 
@@ -456,8 +456,8 @@ func deleteOldFilesOfDir(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusAccepted, map[string]interface{}{
-		"message":       "Old files deleted successfully",
-		"path":          path,
+		messageKey:      "Old files deleted successfully",
+		pathField:       path,
 		"days":          days,
 		"count":         deletedCount,
 		"deleted_count": deletedCount,
@@ -507,6 +507,12 @@ const (
 	readHeaderTimeout      = 10 * time.Second
 	idleTimeout            = 120 * time.Second
 	healthPath             = "/health"
+)
+
+// Request field and JSON response keys shared by the HTTP handlers.
+const (
+	pathField  = "path"
+	messageKey = "message"
 )
 
 type serverConfig struct {

@@ -89,7 +89,7 @@ func BenchmarkUpload100MBRegularFile(b *testing.B) {
 		body := &bytes.Buffer{}
 		w := multipart.NewWriter(body)
 
-		if err := w.WriteField("path", fmt.Sprintf("bench-%d.bin", i)); err != nil {
+		if err := w.WriteField(pathField, fmt.Sprintf("bench-%d.bin", i)); err != nil {
 			b.Fatal(err)
 		}
 
@@ -140,7 +140,7 @@ func BenchmarkUpload10MBTarExtract(b *testing.B) {
 		body := &bytes.Buffer{}
 		w := multipart.NewWriter(body)
 
-		if err := w.WriteField("path", fmt.Sprintf("bench-tar-%d", i)); err != nil {
+		if err := w.WriteField(pathField, fmt.Sprintf("bench-tar-%d", i)); err != nil {
 			b.Fatal(err)
 		}
 

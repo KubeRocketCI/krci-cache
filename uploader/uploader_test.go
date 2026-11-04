@@ -90,7 +90,7 @@ func TestUploadSiblingPrefixTraversal(t *testing.T) {
 	require.NoError(t, err)
 	_, err = part.Write([]byte("should not land in sibling"))
 	require.NoError(t, err)
-	require.NoError(t, writer.WriteField("path", "../data-evil/pwned.txt"))
+	require.NoError(t, writer.WriteField(pathField, "../data-evil/pwned.txt"))
 	require.NoError(t, writer.Close())
 
 	req := httptest.NewRequest(http.MethodPost, "/upload", body)
@@ -111,7 +111,7 @@ func TestDeleteFile(t *testing.T) {
 	testFile := filepath.Join(tempdir, "delete-me.txt")
 	require.NoError(t, os.WriteFile(testFile, []byte("delete this"), 0644))
 
-	req := buildDeleteRequest(t, "/upload", map[string]string{"path": "delete-me.txt"})
+	req := buildDeleteRequest(t, "/upload", map[string]string{pathField: "delete-me.txt"})
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 
@@ -132,7 +132,7 @@ func TestDeleteRejectsEmptyPath(t *testing.T) {
 	// Seed a file so we'd notice if the root got wiped.
 	require.NoError(t, os.WriteFile(filepath.Join(tempdir, "guard.txt"), []byte("keep"), 0o644))
 
-	req := buildDeleteRequest(t, "/upload", map[string]string{"path": ""})
+	req := buildDeleteRequest(t, "/upload", map[string]string{pathField: ""})
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 
