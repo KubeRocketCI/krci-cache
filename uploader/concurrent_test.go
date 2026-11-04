@@ -48,7 +48,7 @@ func buildUploadRequest(t *testing.T, path string, content []byte, tarFlag strin
 	_, err = part.Write(content)
 	require.NoError(t, err)
 
-	require.NoError(t, w.WriteField("path", path))
+	require.NoError(t, w.WriteField(pathField, path))
 
 	if tarFlag != "" {
 		require.NoError(t, w.WriteField("targz", tarFlag))
@@ -183,7 +183,7 @@ func TestReaderDuringWriter(t *testing.T) {
 			time.Sleep(20 * time.Microsecond)
 		}
 
-		require.NoError(t, w.WriteField("path", "live.bin"))
+		require.NoError(t, w.WriteField(pathField, "live.bin"))
 		require.NoError(t, w.Close())
 
 		req := httptest.NewRequest(http.MethodPost, "/upload", body)
@@ -344,7 +344,7 @@ func TestStagingDirRejectedFromMutatingHandlers(t *testing.T) {
 	// DELETE /upload with path inside .tmp (multipart, matching production)
 	{
 		req := buildDeleteRequest(t, "/upload",
-			map[string]string{"path": ".tmp/anything"})
+			map[string]string{pathField: ".tmp/anything"})
 		rec := httptest.NewRecorder()
 		e.ServeHTTP(rec, req)
 		assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
@@ -363,7 +363,7 @@ func TestDeleteOldFilesRecursiveDir(t *testing.T) {
 	require.NoError(t, os.Chtimes(stale, old, old))
 
 	req := buildDeleteRequest(t, "/delete", map[string]string{
-		"path":      "",
+		pathField:   "",
 		"days":      "1",
 		"recursive": "true",
 	})
@@ -387,7 +387,7 @@ func TestDeleteOldFilesSkipsStagingDir(t *testing.T) {
 	require.NoError(t, os.Chtimes(stage, old, old))
 
 	req := buildDeleteRequest(t, "/delete", map[string]string{
-		"path":      "",
+		pathField:   "",
 		"days":      "0",
 		"recursive": "true",
 	})
