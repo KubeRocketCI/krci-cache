@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/labstack/echo/v4 v4.16.3
 	github.com/stretchr/testify v1.12.1
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 )
 
 require (
