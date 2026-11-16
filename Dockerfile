@@ -6,11 +6,12 @@ LABEL org.opencontainers.image.title="krci-cache" \
       org.opencontainers.image.vendor="KubeRocketCI" \
       org.opencontainers.image.source="https://github.com/KubeRocketCI/krci-cache"
 
-# Install required packages with version pinning
-RUN apk add --no-cache \
-    tar=1.35-r4 \
-    rsync=3.5.0-r0 \
-    && rm -rf /var/cache/apk/*
+# Alpine keeps only the latest build of a package per branch: pin minors (~=), not builds, and bump them with the FROM branch.
+# apk upgrade brings base image packages up to the branch's latest builds.
+RUN apk upgrade --no-cache && \
+    apk add --no-cache \
+    tar~=1.35 \
+    rsync~=3.5
 
 # Copy the pre-built binary from dist folder
 ARG TARGETARCH
