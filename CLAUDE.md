@@ -9,6 +9,25 @@ KubeRocketCI Cache (krci-cache) is a high-performance HTTP caching server for CI
 - **uploader/untar.go**: Secure tar.gz extraction with size limits and path traversal protection
 - **uploader/request_logger.go**: JSON access-log middleware; deliberately reproduces echo 4.13.4's default `middleware.Logger` field names and types (log parsers depend on them) on top of `RequestLoggerWithConfig`, because `middleware.Logger` is deprecated
 - **uploader/uploader_test.go**, **uploader/untar_test.go** and **uploader/request_logger_test.go**: Comprehensive test suites
+- **deploy-templates/**: Helm chart `krci-cache`. Image `epamedp/krci-cache`; `image.tag` defaults to `appVersion`.
+- **ct-configs/**: chart-testing config for the `helm-lint` task in the KRCI review pipeline.
+
+### CI/CD
+
+KRCI Tekton pipelines build and publish the image and the chart. GitHub Actions publish nothing.
+
+- Review pipeline runs `make validate-docs`, `ct lint` (`ct-configs/`), `make build` and `make test`.
+- Release pipeline runs from `release/X.Y` only. It sets the chart `version`/`appVersion`, runs `make helm-docs` and `make changelog`, and tags `vX.Y.Z`.
+- GitHub `release.yaml` runs on the `vX.Y.Z` tag. It writes the image signature Rekor UUIDs into the release notes.
+
+### Helm Chart
+
+```bash
+make helm-docs      # regenerate deploy-templates/README.md; commit it with any values.yaml change
+make validate-docs  # fail if deploy-templates/README.md is out of date
+make helm-lint
+make helm-template
+```
 
 ## Common Development Commands
 

@@ -26,6 +26,7 @@ Simplified for memory efficiency and stability in resource-constrained environme
 - [Container Deployment](#container-deployment)
   - [Build](#build)
   - [Simplified Deployment](#simplified-deployment)
+- [Kubernetes Deployment](#kubernetes-deployment)
 - [Setup](#setup)
   - [Run directly](#run-directly)
   - [Run with authentication](#run-with-authentication)
@@ -173,6 +174,16 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+```
+
+## Kubernetes Deployment
+
+The Helm chart is in [deploy-templates](deploy-templates/README.md) and is published to the `epamedp` Helm repository as `krci-cache`.
+The KubeRocketCI `edp-tekton` chart installs it as a subchart; set `krci-cache.enabled` to control it.
+
+```shell
+helm repo add epamedp https://epam.github.io/edp-helm-charts/stable
+helm install krci-cache epamedp/krci-cache --namespace krci --create-namespace
 ```
 
 ## Setup

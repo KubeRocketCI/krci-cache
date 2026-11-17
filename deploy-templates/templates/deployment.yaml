@@ -1,13 +1,13 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "krci-cache.fullname" . }}
+  name: {{ include "krci-cache.name" . }}
   labels:
     {{- include "krci-cache.labels" . | nindent 4 }}
 spec:
-  {{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.replicaCount }}
-  {{- end }}
+  replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "krci-cache.selectorLabels" . | nindent 6 }}
@@ -18,42 +18,58 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "krci-cache.labels" . | nindent 8 }}
-        {{- with .Values.podLabels }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
+        {{- include "krci-cache.selectorLabels" . | nindent 8 }}
     spec:
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: cache
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "krci-cache.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: fix-permissions
+          image: {{ .Values.initContainers.repository }}:{{ .Values.initContainers.tag }}
+          command:
+            - chown
+            - '-R'
+            - '1001:1001'
+            - /uploads
+          resources: {}
+          volumeMounts:
+            - name: cache
+              mountPath: /uploads
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+            runAsUser: 0
       containers:
         - name: {{ .Chart.Name }}
+          volumeMounts:
+            - mountPath: "/uploads"
+              name: cache
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ end }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: UPLOADER_HOST
+              value: "0.0.0.0"
+            - name: UPLOADER_PORT
+              value: "{{ .Values.service.port }}"
+            - name: UPLOADER_DIRECTORY
+              value: "/uploads"
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
               protocol: TCP
-          livenessProbe:
-            {{- toYaml .Values.livenessProbe | nindent 12 }}
-          readinessProbe:
-            {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- with .Values.volumeMounts }}
-          volumeMounts:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-      {{- with .Values.volumes }}
-      volumes:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

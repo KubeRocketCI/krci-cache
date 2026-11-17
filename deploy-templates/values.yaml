@@ -2,38 +2,34 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
-replicaCount: 1
-
+# krci-cache container image configurations.
 image:
-  repository: krci-cache
+  # -- krci-cache container image. Add a registry prefix to use a mirror or a private registry.
+  repository: epamedp/krci-cache
+  # -- Defines the policy with which pod will request its image.
   pullPolicy: IfNotPresent
   # -- Overrides the image tag whose default is the chart appVersion.
   tag: ""
-  # -- Image digest for immutable reference (e.g., sha256:abc123...). If set, deployed as :tag@digest.
-  digest: ""
 
-imagePullSecrets:
-# Define secret to pull images. Secret can be provisioned by edp-install or manually.
-  - name: regcred
+# InitContainer configurations.
+initContainers:
+  # -- Defines the repository.
+  repository: busybox
+  # -- InitContainer image.
+  tag: 1.36.1
+
+# -- Specifies secrets for pulling Docker images.
+imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-serviceAccount:
-  # -- Specifies whether a service account should be created
-  create: true
-  # -- Automatically mount a ServiceAccount's API credentials?
-  automount: true
-  # -- Annotations to add to the service account
-  annotations: {}
-  # -- The name of the service account to use. If not set and create is true, a name is generated using the fullname template
-  name: ""
-
+# -- Annotations to be added to krci-cache pods.
 podAnnotations: {}
-podLabels: {}
-
+# -- Specifies privilege and access control configurations for krci-cache pods.
 podSecurityContext: {}
   # fsGroup: 2000
 
+# -- Security context to be added to krci-cache pods.
 securityContext: {}
   # capabilities:
   #   drop:
@@ -42,27 +38,16 @@ securityContext: {}
   # runAsNonRoot: true
   # runAsUser: 1000
 
+# -- Defines size of the Persistent Volume that is used for cache.
+cacheSize: "5Gi"
+
+# -- krci-cache service configurations.
 service:
+  name: "krci-cache"
   type: ClusterIP
   port: 8080
-ingress:
-  enabled: false
-  dnsWildcard: core.kuberocketci.io
-  className: ""
-  annotations: {}
-    # kubernetes.io/ingress.class: nginx
-    # kubernetes.io/tls-acme: "true"
-  hosts:
-    # If need to use specific host, define host value below. By default when set 'edpDefault' FQDN: <CODEBASE_NAME>-<CODEBASE_NAMESPACE>.<CLUSTER_DNS_WILDCARD>
-    - host: edpDefault
-      paths:
-        - path: /
-          pathType: ImplementationSpecific
-  tls: []
-  #  - secretName: chart-example-tls
-  #    hosts:
-  #      - chart-example.local
 
+# -- krci-cache pod resource requests and limits.
 resources: {}
   # We usually recommend not to specify default resources and to leave this as a conscious
   # choice for the user. This also increases chances charts run on environments with little
@@ -75,39 +60,9 @@ resources: {}
   #   cpu: 100m
   #   memory: 128Mi
 
-livenessProbe:
-  tcpSocket:
-    port: http
-readinessProbe:
-  tcpSocket:
-    port: http
-  initialDelaySeconds: 20
-
-autoscaling:
-  enabled: false
-  minReplicas: 1
-  maxReplicas: 100
-  targetCPUUtilizationPercentage: 80
-  # targetMemoryUtilizationPercentage: 80
-
-# Additional volumes on the output Deployment definition.
-volumes: []
-# - name: foo
-#   secret:
-#     secretName: mysecret
-#     optional: false
-
-# Additional volumeMounts on the output Deployment definition.
-volumeMounts: []
-# - name: foo
-#   mountPath: "/etc/foo"
-#   readOnly: true
-
-# -- https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector
+# -- Node labels for krci-cache pod assignment.
 nodeSelector: {}
-
-# -- https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/
+# -- Node tolerations for pod scheduling to nodes with taints.
 tolerations: []
-
-# -- https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity
+# -- Pod affinity.
 affinity: {}

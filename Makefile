@@ -39,6 +39,7 @@ CHAINSAW_VERSION ?= v0.2.15
 KIND_VERSION ?= v0.29.0
 KUSTOMIZE_VERSION ?= v5.6.0
 GITCHGLOG_VERSION ?= v0.15.4
+HELMDOCS_VERSION ?= v1.14.2
 
 # Kind cluster configuration
 KUBE_VERSION ?= 1.32
@@ -59,9 +60,10 @@ CHAINSAW ?= $(LOCALBIN)/chainsaw
 KIND ?= $(LOCALBIN)/kind
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 GITCHGLOG ?= $(LOCALBIN)/git-chglog
+HELMDOCS ?= $(LOCALBIN)/helm-docs
 
 .PHONY: install-tools
-install-tools: golangci-lint chainsaw kind kustomize ## Download all tools locally if necessary
+install-tools: golangci-lint chainsaw kind kustomize helmdocs ## Download all tools locally if necessary
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
@@ -85,8 +87,8 @@ lint-fix: golangci-lint ## Run golangci-lint with --fix
 	$(GOLANGCI_LINT) run -v --fix ./...
 
 .PHONY: test
-test: fmt vet ## Run tests
-	go test -race -coverprofile=coverage.out -covermode=atomic ./...
+test: fmt vet ## Run tests with the race detector (needs cgo and a C compiler)
+	CGO_ENABLED=1 go test -race -coverprofile=coverage.out -covermode=atomic ./...
 	@echo "Coverage report generated: coverage.out"
 
 .PHONY: test-coverage
@@ -113,6 +115,29 @@ endif
 git-chglog: $(GITCHGLOG) ## Download git-chglog locally if necessary
 $(GITCHGLOG): $(LOCALBIN)
 	$(call go-install-tool,$(GITCHGLOG),github.com/git-chglog/git-chglog/cmd/git-chglog,$(GITCHGLOG_VERSION))
+
+##@ Helm
+
+.PHONY: helm-docs
+helm-docs: helmdocs ## Generate deploy-templates/README.md from README.md.gotmpl
+	$(HELMDOCS) --chart-search-root deploy-templates
+
+.PHONY: validate-docs
+validate-docs: helm-docs ## Fail if deploy-templates/README.md is out of date
+	@git diff -s --exit-code deploy-templates/README.md || (echo "Run 'make helm-docs' to address the issue." && git diff && exit 1)
+
+.PHONY: helm-lint
+helm-lint: ## Lint the Helm chart
+	helm lint deploy-templates
+
+.PHONY: helm-template
+helm-template: ## Render the Helm chart with default values
+	helm template krci-cache deploy-templates
+
+.PHONY: helmdocs
+helmdocs: $(HELMDOCS) ## Download helm-docs locally if necessary
+$(HELMDOCS): $(LOCALBIN)
+	$(call go-install-tool,$(HELMDOCS),github.com/norwoodj/helm-docs/cmd/helm-docs,$(HELMDOCS_VERSION))
 
 build: $(DIST_DIR) ## Build the binary file following EDP pattern
 	CGO_ENABLED=0 GOOS=${HOST_OS} GOARCH=${HOST_ARCH} go build -v \
