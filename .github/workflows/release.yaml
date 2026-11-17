@@ -8,6 +8,10 @@ on:
 env:
   GO_VERSION: '1.27'
   GITCHGLOG_VERSION: 'v0.15.4'
+  CRANE_VERSION: 'v0.16.1'
+  REKOR_CLI_VERSION: 'v1.3.3'
+  # Pushed and cosign-signed by the KRCI release pipeline before it pushes the tag.
+  IMAGE_NAME: 'epamedp/krci-cache'
 
 permissions:
   contents: write
@@ -17,7 +21,7 @@ jobs:
     name: Perform automatic release on trigger ${{ github.ref }}
     runs-on: ubuntu-latest
     env:
-      # The name of the tag as supplied by the GitHub event, e.g. refs/tags/v0.3.0
+      # The name of the tag as supplied by the GitHub event, e.g. refs/tags/v0.5.0
       SOURCE_TAG: ${{ github.ref }}
     steps:
       - name: Checkout code
@@ -35,12 +39,29 @@ jobs:
         run: |
           set -xue
 
-          # refs/tags/v0.3.0 -> v0.3.0
+          # refs/tags/v0.5.0 -> v0.5.0
           RELEASE_TAG="${SOURCE_TAG##*/}"
+          IMAGE_TAG="${RELEASE_TAG#v}"
 
           go install github.com/git-chglog/git-chglog/cmd/git-chglog@${GITCHGLOG_VERSION}
+          go install github.com/google/go-containerregistry/cmd/crane@${CRANE_VERSION}
+          go install github.com/sigstore/rekor/cmd/rekor-cli@${REKOR_CLI_VERSION}
 
-          git-chglog --template .chglog/release.tpl.md -o release.md "${RELEASE_TAG}"
+          git-chglog --template .chglog/release.tpl.md -o changelog.md "${RELEASE_TAG}"
+
+          DIGEST=$(crane digest "${IMAGE_NAME}:${IMAGE_TAG}" | tr ':' '-')
+          ATTESTATION_DIGEST=$(crane manifest "${IMAGE_NAME}:${DIGEST}.att" | jq -r '.layers[].digest')
+          SIGNATURE_DIGEST=$(crane manifest "${IMAGE_NAME}:${DIGEST}.sig" | jq -r '.layers[].digest')
+          ATTESTATION_UUID=$(rekor-cli search --sha "${ATTESTATION_DIGEST}" --format json | jq -r '.UUIDs[0]')
+          SIGNATURE_UUID=$(rekor-cli search --sha "${SIGNATURE_DIGEST}" --format json | jq -r '.UUIDs[0]')
+
+          {
+            echo "### Deployment Certifications and Source Traceability"
+            echo "KubeRocketCI container images bear [cosign](https://github.com/sigstore/cosign) signatures. Refer to the [documentation](https://docs.kuberocketci.io/docs/developer-guide/artifacts-verification) for instructions on verification."
+            echo "The Rekor UUID's for this release is \`${ATTESTATION_UUID}\` - attestation and"
+            echo "\`${SIGNATURE_UUID}\` - signature"
+            cat changelog.md
+          } > release.md
 
           echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
 

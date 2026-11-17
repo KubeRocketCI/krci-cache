@@ -1,10 +1,16 @@
 {{ template "chart.header" . }}
-
 {{ template "chart.deprecationWarning" . }}
 
 {{ template "chart.badgesSection" . }}
+[![Artifact HUB](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/epmdedp)](https://artifacthub.io/packages/search?repo=epmdedp)
 
 {{ template "chart.description" . }}
+
+## Additional Information
+
+The krci-cache Helm chart deploys an HTTP cache for Tekton pipeline artifacts.
+Pipeline tasks upload dependencies and build outputs to the cache and restore them in later runs, which reduces build times.
+The KubeRocketCI `edp-tekton` chart installs it as the `krci-cache` subchart.
 
 {{ template "chart.homepageLine" . }}
 

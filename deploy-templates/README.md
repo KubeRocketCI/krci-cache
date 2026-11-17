@@ -1,16 +1,24 @@
 # krci-cache
 
-![Version: 0.1.0](https://img.shields.io/badge/Version-0.1.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.1.0](https://img.shields.io/badge/AppVersion-0.1.0-informational?style=flat-square)
+![Version: 0.5.0-SNAPSHOT](https://img.shields.io/badge/Version-0.5.0--SNAPSHOT-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.5.0-SNAPSHOT](https://img.shields.io/badge/AppVersion-0.5.0--SNAPSHOT-informational?style=flat-square)
+[![Artifact HUB](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/epmdedp)](https://artifacthub.io/packages/search?repo=epmdedp)
 
-A Helm chart for Kubernetes
+A Helm chart for KubeRocketCI Cache, an HTTP cache for Tekton pipeline artifacts
 
-**Homepage:** <https://github.com/KubeRocketCI/krci-cache>
+## Additional Information
+
+The krci-cache Helm chart deploys an HTTP cache for Tekton pipeline artifacts.
+Pipeline tasks upload dependencies and build outputs to the cache and restore them in later runs, which reduces build times.
+The KubeRocketCI `edp-tekton` chart installs it as the `krci-cache` subchart.
+
+**Homepage:** <https://docs.kuberocketci.io>
 
 ## Maintainers
 
 | Name | Email | Url |
 | ---- | ------ | --- |
-| DEV Team |  |  |
+| epmd-edp | <SupportEPMD-EDP@epam.com> | <https://solutionshub.epam.com/solution/kuberocketci> |
+| sergk |  | <https://github.com/SergK> |
 
 ## Source Code
 
@@ -20,42 +28,20 @@ A Helm chart for Kubernetes
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| affinity | object | `{}` | https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity |
-| autoscaling.enabled | bool | `false` |  |
-| autoscaling.maxReplicas | int | `100` |  |
-| autoscaling.minReplicas | int | `1` |  |
-| autoscaling.targetCPUUtilizationPercentage | int | `80` |  |
+| affinity | object | `{}` | Pod affinity. |
+| cacheSize | string | `"5Gi"` | Defines size of the Persistent Volume that is used for cache. |
 | fullnameOverride | string | `""` |  |
-| image.digest | string | `""` | Image digest for immutable reference (e.g., sha256:abc123...). If set, deployed as :tag@digest. |
-| image.pullPolicy | string | `"IfNotPresent"` |  |
-| image.repository | string | `"krci-cache"` |  |
+| image.pullPolicy | string | `"IfNotPresent"` | Defines the policy with which pod will request its image. |
+| image.repository | string | `"epamedp/krci-cache"` | krci-cache container image. Add a registry prefix to use a mirror or a private registry. |
 | image.tag | string | `""` | Overrides the image tag whose default is the chart appVersion. |
-| imagePullSecrets[0].name | string | `"regcred"` |  |
-| ingress.annotations | object | `{}` |  |
-| ingress.className | string | `""` |  |
-| ingress.dnsWildcard | string | `"core.kuberocketci.io"` |  |
-| ingress.enabled | bool | `false` |  |
-| ingress.hosts[0].host | string | `"edpDefault"` |  |
-| ingress.hosts[0].paths[0].path | string | `"/"` |  |
-| ingress.hosts[0].paths[0].pathType | string | `"ImplementationSpecific"` |  |
-| ingress.tls | list | `[]` |  |
-| livenessProbe.tcpSocket.port | string | `"http"` |  |
+| imagePullSecrets | list | `[]` | Specifies secrets for pulling Docker images. |
+| initContainers.repository | string | `"busybox"` | Defines the repository. |
+| initContainers.tag | string | `"1.36.1"` | InitContainer image. |
 | nameOverride | string | `""` |  |
-| nodeSelector | object | `{}` | https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector |
-| podAnnotations | object | `{}` |  |
-| podLabels | object | `{}` |  |
-| podSecurityContext | object | `{}` |  |
-| readinessProbe.initialDelaySeconds | int | `20` |  |
-| readinessProbe.tcpSocket.port | string | `"http"` |  |
-| replicaCount | int | `1` |  |
-| resources | object | `{}` |  |
-| securityContext | object | `{}` |  |
-| service.port | int | `8080` |  |
-| service.type | string | `"ClusterIP"` |  |
-| serviceAccount.annotations | object | `{}` | Annotations to add to the service account |
-| serviceAccount.automount | bool | `true` | Automatically mount a ServiceAccount's API credentials? |
-| serviceAccount.create | bool | `true` | Specifies whether a service account should be created |
-| serviceAccount.name | string | `""` | The name of the service account to use. If not set and create is true, a name is generated using the fullname template |
-| tolerations | list | `[]` | https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/ |
-| volumeMounts | list | `[]` |  |
-| volumes | list | `[]` |  |
+| nodeSelector | object | `{}` | Node labels for krci-cache pod assignment. |
+| podAnnotations | object | `{}` | Annotations to be added to krci-cache pods. |
+| podSecurityContext | object | `{}` | Specifies privilege and access control configurations for krci-cache pods. |
+| resources | object | `{}` | krci-cache pod resource requests and limits. |
+| securityContext | object | `{}` | Security context to be added to krci-cache pods. |
+| service | object | `{"name":"krci-cache","port":8080,"type":"ClusterIP"}` | krci-cache service configurations. |
+| tolerations | list | `[]` | Node tolerations for pod scheduling to nodes with taints. |
