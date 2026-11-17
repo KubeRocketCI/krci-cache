@@ -1,70 +1,12 @@
 <a name="unreleased"></a>
 ## [Unreleased]
 
-### Documentation
 
-- Update Changelog
-
-
-<a name="v0.4.0"></a>
-## [v0.4.0] - 2026-11-07
-### Bug Fixes
-
-- bump golang.org/x net, crypto and text to patched versions
-- bump echo to 4.15.4 and migrate to RequestLogger
-
-### Documentation
-
-- Update Changelog
-
-### CI
-
-- bump softprops/action-gh-release from 2 to 3
-- bump actions/setup-go from 6 to 7
-
-### Dependencies
-
-- bump github.com/labstack/echo/v4
-- bump github.com/labstack/echo/v4
-- bump github.com/labstack/echo/v4
-- bump golang.org/x/sys
-- bump github.com/stretchr/testify from 1.11.1 to 1.12.1
-
-### Routine
-
-- Bump Go to 1.27.3
-- Bump Go to 1.26.9
-
-
-<a name="v0.3.0"></a>
-## [v0.3.0] - 2026-07-13
-### Bug Fixes
-
-- update rsync pin to 3.4.3-r0 to unblock Docker build
-
-### Documentation
-
-- streamline CLAUDE.md
-
-### CI
-
-- automate changelog, release notes, and commit validation
-- bump actions/checkout from 6 to 7
-
-### Dependencies
-
-- bump golang.org/x/sys in the go-stdlib group
-- bump golang.org/x/net from 0.54.0 to 0.55.0
-- bump golang.org/x/crypto from 0.45.0 to 0.52.0
-- bump golang.org/x/sys in the go-stdlib group
-- bump golang.org/x/sys in the go-stdlib group
-- bump golang.org/x/sys in the go-stdlib group
-
-
-<a name="v0.2.0"></a>
-## v0.2.0 - 2026-05-21
+<a name="v0.5.0"></a>
+## v0.5.0 - 2026-11-17
 ### Features
 
+- Add krci-cache Helm chart and KRCI release flow
 - honor request context in publish operations and optimize tar extraction
 - stream multipart uploads to eliminate disk write amplification
 - implement atomic publish with last-writer-wins concurrency safety
@@ -72,6 +14,11 @@
 
 ### Bug Fixes
 
+- Pin Alpine packages by minor version
+- Bump golang.org/x/net to v0.62.0
+- bump golang.org/x net, crypto and text to patched versions
+- bump echo to 4.15.4 and migrate to RequestLogger
+- update rsync pin to 3.4.3-r0 to unblock Docker build
 - prevent OOM by limiting multipart form memory to 32MB
 
 ### Performance Improvements
@@ -91,10 +38,17 @@
 
 ### Documentation
 
+- Update Changelog
+- Update Changelog
+- streamline CLAUDE.md
 - Update README by adding use-cases
 
 ### CI
 
+- bump softprops/action-gh-release from 2 to 3
+- bump actions/setup-go from 6 to 7
+- automate changelog, release notes, and commit validation
+- bump actions/checkout from 6 to 7
 - implement branch-sha and semver-based image tagging for releases
 - bump docker/build-push-action from 6 to 7
 - bump docker/setup-qemu-action from 3 to 4
@@ -111,12 +65,27 @@
 
 ### Dependencies
 
+- bump github.com/labstack/echo/v4
+- bump golang.org/x/sys
+- bump github.com/labstack/echo/v4
+- bump github.com/labstack/echo/v4
+- bump github.com/labstack/echo/v4
+- bump golang.org/x/sys
+- bump github.com/stretchr/testify from 1.11.1 to 1.12.1
+- bump golang.org/x/sys in the go-stdlib group
+- bump golang.org/x/net from 0.54.0 to 0.55.0
+- bump golang.org/x/crypto from 0.45.0 to 0.52.0
+- bump golang.org/x/sys in the go-stdlib group
+- bump golang.org/x/sys in the go-stdlib group
+- bump golang.org/x/sys in the go-stdlib group
 - bump golang.org/x/crypto from 0.38.0 to 0.45.0
 - bump github.com/stretchr/testify from 1.11.0 to 1.11.1
 - bump github.com/stretchr/testify from 1.10.0 to 1.11.0
 
 ### Routine
 
+- Bump Go to 1.27.3
+- Bump Go to 1.26.9
 - Update alpine version to 3.23
 - Update rsync package version in Dockerfile
 - update base image version in Dockerfile
@@ -142,6 +111,4 @@
 - update dependencies
 
 
-[Unreleased]: https://github.com/KubeRocketCI/krci-cache/compare/v0.4.0...HEAD
-[v0.4.0]: https://github.com/KubeRocketCI/krci-cache/compare/v0.3.0...v0.4.0
-[v0.3.0]: https://github.com/KubeRocketCI/krci-cache/compare/v0.2.0...v0.3.0
+[Unreleased]: https://github.com/KubeRocketCI/krci-cache/compare/v0.5.0...HEAD
