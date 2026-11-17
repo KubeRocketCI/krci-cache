@@ -40,7 +40,7 @@ The KubeRocketCI `edp-tekton` chart installs it as the `krci-cache` subchart.
 | nameOverride | string | `""` |  |
 | nodeSelector | object | `{}` | Node labels for krci-cache pod assignment. |
 | podAnnotations | object | `{}` | Annotations to be added to krci-cache pods. |
-| podSecurityContext | object | `{}` | Specifies privilege and access control configurations for krci-cache pods. |
+| podSecurityContext | object | `{"fsGroup":1001,"fsGroupChangePolicy":"OnRootMismatch","runAsGroup":1001,"runAsNonRoot":true,"runAsUser":1001,"seccompProfile":{"type":"RuntimeDefault"}}` | Specifies privilege and access control configurations for krci-cache pods. runAsUser and runAsGroup set the cache volume owner applied by the fix-permissions init container. Default 1001 matches the image USER. |
 | resources | object | `{}` | krci-cache pod resource requests and limits. |
 | securityContext | object | `{}` | Security context to be added to krci-cache pods. |
 | service | object | `{"name":"krci-cache","port":8080,"type":"ClusterIP"}` | krci-cache service configurations. |

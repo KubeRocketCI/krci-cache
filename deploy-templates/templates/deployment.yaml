@@ -36,7 +36,7 @@ spec:
           command:
             - chown
             - '-R'
-            - '1001:1001'
+            - '{{ required "podSecurityContext.runAsUser is required" .Values.podSecurityContext.runAsUser }}:{{ required "podSecurityContext.runAsGroup is required" .Values.podSecurityContext.runAsGroup }}'
             - /uploads
           resources: {}
           volumeMounts:
@@ -47,6 +47,7 @@ spec:
           imagePullPolicy: Always
           securityContext:
             privileged: true
+            runAsNonRoot: false
             runAsUser: 0
       containers:
         - name: {{ .Chart.Name }}
