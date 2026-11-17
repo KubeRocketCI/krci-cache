@@ -1,9 +1,26 @@
 <a name="unreleased"></a>
 ## [Unreleased]
 
+
+<a name="v0.5.0"></a>
+## [v0.5.0] - 2026-11-17
+### Features
+
+- Add krci-cache Helm chart and KRCI release flow
+
+### Bug Fixes
+
+- Pin Alpine packages by minor version
+- Bump golang.org/x/net to v0.62.0
+
 ### Documentation
 
 - Update Changelog
+
+### Dependencies
+
+- bump github.com/labstack/echo/v4
+- bump golang.org/x/sys
 
 
 <a name="v0.4.0"></a>
@@ -142,6 +159,7 @@
 - update dependencies
 
 
-[Unreleased]: https://github.com/KubeRocketCI/krci-cache/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/KubeRocketCI/krci-cache/compare/v0.5.0...HEAD
+[v0.5.0]: https://github.com/KubeRocketCI/krci-cache/compare/v0.4.0...v0.5.0
 [v0.4.0]: https://github.com/KubeRocketCI/krci-cache/compare/v0.3.0...v0.4.0
 [v0.3.0]: https://github.com/KubeRocketCI/krci-cache/compare/v0.2.0...v0.3.0
