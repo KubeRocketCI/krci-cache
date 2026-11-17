@@ -27,6 +27,7 @@ Simplified for memory efficiency and stability in resource-constrained environme
   - [Build](#build)
   - [Simplified Deployment](#simplified-deployment)
 - [Kubernetes Deployment](#kubernetes-deployment)
+  - [Remove a Cache Archive](#remove-a-cache-archive)
 - [Setup](#setup)
   - [Run directly](#run-directly)
   - [Run with authentication](#run-with-authentication)
@@ -141,7 +142,7 @@ All endpoints return JSON responses for better integration:
 ## Container Deployment
 
 The application is containerized using a multi-architecture approach with pre-built binaries.
-The container runs as a non-root user for security.
+Base image: `gcr.io/distroless/static:nonroot`. No shell, no package manager. The container runs as UID/GID `1001`.
 
 ### Build
 
@@ -169,12 +170,9 @@ services:
     volumes:
       - ./cache:/var/cache/artifacts
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 ```
+
+The image has no `curl` or shell: probe `GET /health` from outside the container.
 
 ## Kubernetes Deployment
 
@@ -185,6 +183,29 @@ The KubeRocketCI `edp-tekton` chart installs it as a subchart; set `krci-cache.e
 helm repo add epamedp https://epam.github.io/edp-helm-charts/stable
 helm install krci-cache epamedp/krci-cache --namespace krci --create-namespace
 ```
+
+The pod runs as `podSecurityContext.runAsUser`/`runAsGroup` (default `1001`, equal to the image `USER`). The `fix-permissions` init container sets the cache volume owner to the same values.
+
+### Remove a Cache Archive
+
+Pipeline caches are stored as `<codebase-name>.tar.zst`. `GET /` does not list directories.
+
+Delete one archive through the API, from any pod in the cluster or through `kubectl port-forward`:
+
+```shell
+curl -u username:password -F path=<codebase-name>.tar.zst -X DELETE http://krci-cache:8080/upload
+```
+
+List or edit files on the volume: attach an ephemeral debug container that mounts the `cache` volume as UID `1001`. Requires `pods/ephemeralcontainers` RBAC.
+
+```shell
+echo '{"securityContext":{"runAsUser":1001,"runAsGroup":1001,"runAsNonRoot":true,"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}},"volumeMounts":[{"name":"cache","mountPath":"/uploads"}]}' > cache-debug.json
+kubectl -n krci debug <krci-cache-pod> --image=busybox --custom=cache-debug.json --profile=restricted -c cache-admin -it -- sh
+ls -l /uploads
+rm /uploads/<codebase-name>.tar.zst
+```
+
+The debug container stays in the pod spec until the pod restarts.
 
 ## Setup
 

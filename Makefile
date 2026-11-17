@@ -9,7 +9,8 @@ DIST_DIR=${CURRENT_DIR}/dist
 BIN_NAME=krci-cache
 HOST_OS?=$(shell go env GOOS)
 HOST_ARCH?=$(shell go env GOARCH)
-VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "unknown")
+# Release tags only: build/* snapshot tags contain "/", invalid in image tags.
+VERSION?=$(shell git describe --tags --match 'v*' --always --dirty 2>/dev/null || echo "unknown")
 BUILD_DATE=$(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 GIT_COMMIT=$(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
 
