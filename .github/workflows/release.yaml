@@ -37,23 +37,61 @@ jobs:
 
       - name: Generate release notes
         run: |
-          set -xue
+          set -xueo pipefail
+
+          # Registry and Rekor can lag behind the tag push: retry each lookup.
+          # RETRY_ATTEMPTS tries, waiting RETRY_DELAY * attempt seconds between them.
+          RETRY_ATTEMPTS="${RETRY_ATTEMPTS:-5}"
+          RETRY_DELAY="${RETRY_DELAY:-15}"
+
+          # retry <command...>: run the command until it succeeds, at most RETRY_ATTEMPTS
+          # times. Stdout is passed through, log lines go to stderr.
+          retry() {
+            attempt=1
+            while true; do
+              if "$@"; then
+                return 0
+              fi
+              if [ "${attempt}" -ge "${RETRY_ATTEMPTS}" ]; then
+                echo "::error::'$*' failed after ${attempt} attempts" >&2
+                return 1
+              fi
+              delay=$(( RETRY_DELAY * attempt ))
+              echo "'$*' failed (attempt ${attempt}/${RETRY_ATTEMPTS}), retrying in ${delay}s" >&2
+              sleep "${delay}"
+              attempt=$(( attempt + 1 ))
+            done
+          }
+
+          # Print the digest of the first layer of an image manifest. Fails if it is missing.
+          layer_digest() {
+            d=$(crane manifest "$1" | jq -r '.layers[0].digest // empty')
+            [ -n "${d}" ] || return 1
+            echo "${d}"
+          }
+
+          # Print the Rekor entry UUID for a layer digest. Fails if there is none yet.
+          rekor_uuid() {
+            u=$(rekor-cli search --sha "$1" --format json | jq -r '.UUIDs[0] // empty')
+            [ -n "${u}" ] || return 1
+            echo "${u}"
+          }
 
           # refs/tags/v0.5.0 -> v0.5.0
           RELEASE_TAG="${SOURCE_TAG##*/}"
           IMAGE_TAG="${RELEASE_TAG#v}"
 
-          go install github.com/git-chglog/git-chglog/cmd/git-chglog@${GITCHGLOG_VERSION}
-          go install github.com/google/go-containerregistry/cmd/crane@${CRANE_VERSION}
-          go install github.com/sigstore/rekor/cmd/rekor-cli@${REKOR_CLI_VERSION}
+          retry go install github.com/git-chglog/git-chglog/cmd/git-chglog@${GITCHGLOG_VERSION}
+          retry go install github.com/google/go-containerregistry/cmd/crane@${CRANE_VERSION}
+          retry go install github.com/sigstore/rekor/cmd/rekor-cli@${REKOR_CLI_VERSION}
 
           git-chglog --template .chglog/release.tpl.md -o changelog.md "${RELEASE_TAG}"
 
-          DIGEST=$(crane digest "${IMAGE_NAME}:${IMAGE_TAG}" | tr ':' '-')
-          ATTESTATION_DIGEST=$(crane manifest "${IMAGE_NAME}:${DIGEST}.att" | jq -r '.layers[].digest')
-          SIGNATURE_DIGEST=$(crane manifest "${IMAGE_NAME}:${DIGEST}.sig" | jq -r '.layers[].digest')
-          ATTESTATION_UUID=$(rekor-cli search --sha "${ATTESTATION_DIGEST}" --format json | jq -r '.UUIDs[0]')
-          SIGNATURE_UUID=$(rekor-cli search --sha "${SIGNATURE_DIGEST}" --format json | jq -r '.UUIDs[0]')
+          DIGEST=$(retry crane digest "${IMAGE_NAME}:${IMAGE_TAG}" | tr ':' '-')
+          ATTESTATION_DIGEST=$(retry layer_digest "${IMAGE_NAME}:${DIGEST}.att")
+          SIGNATURE_DIGEST=$(retry layer_digest "${IMAGE_NAME}:${DIGEST}.sig")
+          ATTESTATION_UUID=$(retry rekor_uuid "${ATTESTATION_DIGEST}")
+          SIGNATURE_UUID=$(retry rekor_uuid "${SIGNATURE_DIGEST}")
 
           {
             echo "### Deployment Certifications and Source Traceability"
